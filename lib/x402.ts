@@ -35,15 +35,43 @@ export function getFacilitatorClient(): HTTPFacilitatorClient {
 }
 
 /**
- * Verify a payment payload against requirements. Pure passthrough — no retry
- * because verify is fast (~100ms) and deterministic; if it fails, retrying
- * won't change the outcome.
+ * Verify a payment payload against requirements. The HTTPFacilitatorClient
+ * throws on 4xx/5xx responses (with structured fields attached); we trap
+ * those and convert into a `VerifyResponse` with `isValid: false` so the
+ * route handler can produce a clean 402 instead of a 500.
+ *
+ * No retry: verify is fast (~100ms) and deterministic — if it fails, the
+ * outcome won't change on a second try.
  */
 export async function verify(
   paymentPayload: PaymentPayload,
   paymentRequirements: PaymentRequirements,
 ): Promise<VerifyResponse> {
-  return getFacilitatorClient().verify(paymentPayload, paymentRequirements);
+  try {
+    return await getFacilitatorClient().verify(paymentPayload, paymentRequirements);
+  } catch (err) {
+    return verifyResponseFromError(err);
+  }
+}
+
+/**
+ * Coerce a facilitator exception into the `VerifyResponse` shape. The
+ * @x402/core HTTP client decorates errors with `invalidReason`,
+ * `invalidMessage`, and `payer`; we lift those when present.
+ */
+function verifyResponseFromError(err: unknown): VerifyResponse {
+  const e = err as {
+    invalidReason?: string;
+    invalidMessage?: string;
+    payer?: string;
+    message?: string;
+  };
+  return {
+    isValid: false,
+    invalidReason: e.invalidReason ?? 'verify_failed',
+    invalidMessage: e.invalidMessage ?? e.message ?? 'verify request raised an exception',
+    ...(e.payer ? { payer: e.payer } : {}),
+  };
 }
 
 /** Backoff schedule in ms. Three attempts: try → wait → retry → wait → retry. */
@@ -100,12 +128,28 @@ export async function settleWithRetry(
   }
 
   // All attempts failed. If we have a structured response from the facilitator,
-  // return it so callers can inspect errorReason. If we only have an exception,
-  // synthesize a SettleResponse-shaped failure.
+  // return it so callers can inspect errorReason. If we only have exceptions,
+  // synthesize a SettleResponse-shaped failure so the route handler can
+  // produce a clean 402 instead of a 500.
   if (lastResponse !== null) {
     return lastResponse;
   }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error(`settle failed after ${SETTLE_BACKOFFS_MS.length} attempts`);
+  return settleResponseFromError(lastError, paymentRequirements.network);
+}
+
+/**
+ * Coerce a facilitator settle exception into the `SettleResponse` shape.
+ * Used when the entire retry loop exhausted without ever getting a structured
+ * response back (e.g. all 3 attempts hit network errors).
+ */
+function settleResponseFromError(err: unknown, network: string): SettleResponse {
+  const e = err as { errorReason?: string; errorMessage?: string; message?: string };
+  return {
+    success: false,
+    transaction: '',
+    network: network as `${string}:${string}`,
+    errorReason: e.errorReason ?? 'settle_failed',
+    errorMessage:
+      e.errorMessage ?? e.message ?? `settle failed after ${SETTLE_BACKOFFS_MS.length} attempts`,
+  };
 }

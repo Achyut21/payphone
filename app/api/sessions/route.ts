@@ -18,15 +18,19 @@
 
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
-import { decodePaymentSignatureHeader } from '@x402/core/http';
+import {
+  decodePaymentSignatureHeader,
+  encodePaymentRequiredHeader,
+  encodePaymentResponseHeader,
+} from '@x402/core/http';
 import type { PaymentPayload, PaymentRequired, PaymentRequirements } from '@x402/core/types';
 
 import {
   ACTIVE_CAIP2,
   ACTIVE_USDC_ADDRESS,
+  ACTIVE_USDC_DOMAIN,
   M1_PRICE_ATOMIC,
   M1_PRICE_USD,
-  USDC_DOMAIN,
   X402_VERSION,
 } from '@/lib/constants';
 import { getSellerAddress } from '@/lib/cdp';
@@ -51,11 +55,11 @@ function buildRequirements(payTo: `0x${string}`): PaymentRequirements {
     payTo,
     maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
     extra: {
-      // EIP-712 domain bits the buyer needs to reproduce. USDC's `name` is
-      // "USD Coin" (two words, capital C) — getting this wrong silently
-      // produces invalid signatures.
-      name: USDC_DOMAIN.name,
-      version: USDC_DOMAIN.version,
+      // EIP-712 domain bits the buyer needs to reproduce. NOTE: USDC's `name`
+      // differs by network — "USD Coin" on mainnet, "USDC" on Sepolia. We
+      // pull from ACTIVE_USDC_DOMAIN so the M5 flip is automatic.
+      name: ACTIVE_USDC_DOMAIN.name,
+      version: ACTIVE_USDC_DOMAIN.version,
     },
   };
 }
@@ -78,15 +82,36 @@ function buildPaymentRequired(
   };
 }
 
+/**
+ * Build a 402 NextResponse. The x402 v2 client reads PaymentRequired from the
+ * `PAYMENT-REQUIRED` response header (base64 JSON). The JSON body is
+ * informational only for v2 (and a fallback for v1 clients).
+ *
+ * `Access-Control-Expose-Headers` is set so a browser-based buyer agent can
+ * read the header through CORS — harmless for our Node test, useful later.
+ */
+function paymentRequiredResponse(paymentRequired: PaymentRequired): NextResponse {
+  return NextResponse.json(paymentRequired, {
+    status: 402,
+    headers: {
+      'PAYMENT-REQUIRED': encodePaymentRequiredHeader(paymentRequired),
+      'Access-Control-Expose-Headers': 'PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-PAYMENT-RESPONSE',
+    },
+  });
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const sellerAddress = await getSellerAddress();
   const requirements = buildRequirements(sellerAddress);
   const resourceUrl = new URL(request.url).toString();
 
-  const paymentHeader = request.headers.get('X-PAYMENT');
+  // x402 v2 sends the signed payload in `PAYMENT-SIGNATURE`. v1 used `X-PAYMENT`;
+  // we accept both for forward/back compatibility but prefer v2.
+  const paymentHeader =
+    request.headers.get('PAYMENT-SIGNATURE') ?? request.headers.get('X-PAYMENT');
   if (!paymentHeader || paymentHeader.length === 0) {
     // No payment yet — advertise what we want.
-    return NextResponse.json(buildPaymentRequired(resourceUrl, requirements), { status: 402 });
+    return paymentRequiredResponse(buildPaymentRequired(resourceUrl, requirements));
   }
 
   // Decode the signed payload. A malformed header is treated as "no payment".
@@ -95,9 +120,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     paymentPayload = decodePaymentSignatureHeader(paymentHeader);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Malformed X-PAYMENT header';
-    return NextResponse.json(buildPaymentRequired(resourceUrl, requirements, message), {
-      status: 402,
-    });
+    return paymentRequiredResponse(buildPaymentRequired(resourceUrl, requirements, message));
   }
 
   // 1. Verify with the facilitator.
@@ -105,9 +128,8 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!verifyResponse.isValid) {
     const reason = verifyResponse.invalidReason ?? 'verify rejected';
     const detail = verifyResponse.invalidMessage ?? '';
-    return NextResponse.json(
+    return paymentRequiredResponse(
       buildPaymentRequired(resourceUrl, requirements, `${reason}: ${detail}`.trim()),
-      { status: 402 },
     );
   }
 
@@ -116,13 +138,14 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!settleResponse.success) {
     const reason = settleResponse.errorReason ?? 'settle failed';
     const detail = settleResponse.errorMessage ?? '';
-    return NextResponse.json(
+    return paymentRequiredResponse(
       buildPaymentRequired(resourceUrl, requirements, `${reason}: ${detail}`.trim()),
-      { status: 402 },
     );
   }
 
   // 3. Payment settled. Return the session id + tx hash.
+  // The PAYMENT-RESPONSE header lets the buyer agent read settle metadata
+  // out-of-band; the JSON body carries the same plus our session id.
   // M1: sessionId is a fresh UUID, persisted nowhere. M3 will write to DDB.
   const sessionId = randomUUID();
   return NextResponse.json(
@@ -132,6 +155,12 @@ export async function POST(request: Request): Promise<NextResponse> {
       payer: settleResponse.payer ?? verifyResponse.payer ?? null,
       network: settleResponse.network,
     },
-    { status: 200 },
+    {
+      status: 200,
+      headers: {
+        'PAYMENT-RESPONSE': encodePaymentResponseHeader(settleResponse),
+        'Access-Control-Expose-Headers': 'PAYMENT-RESPONSE, X-PAYMENT-RESPONSE',
+      },
+    },
   );
 }

@@ -14,11 +14,19 @@ export const USDC_ADDRESS = {
 } as const;
 
 /**
- * EIP-712 domain components for USDC. The `name` is "USD Coin" with a capital
- * C and a space — getting either wrong silently produces an invalid signature
- * that the facilitator will reject. Verified against on-chain Circle USDC.
+ * EIP-712 domain components for USDC. Values DIFFER between mainnet and
+ * Sepolia — getting either wrong silently produces a signature that the
+ * facilitator's on-chain `staticcall` check rejects with a revert.
+ *
+ * Mainnet (Circle production): name = "USD Coin"
+ * Sepolia (Circle testnet):    name = "USDC"
+ *
+ * Verified empirically against on-chain `name()` of each contract.
  */
-export const USDC_DOMAIN = { name: 'USD Coin', version: '2' } as const;
+export const USDC_DOMAIN = {
+  mainnet: { name: 'USD Coin', version: '2' },
+  sepolia: { name: 'USDC', version: '2' },
+} as const;
 
 export const CHAIN_ID = { mainnet: 8453, sepolia: 84532 } as const;
 
@@ -43,6 +51,7 @@ export const ACTIVE_NETWORK = 'sepolia' as const;
 export const ACTIVE_CHAIN_ID = CHAIN_ID[ACTIVE_NETWORK];
 export const ACTIVE_USDC_ADDRESS = USDC_ADDRESS[ACTIVE_NETWORK];
 export const ACTIVE_CAIP2 = CAIP2[ACTIVE_NETWORK];
+export const ACTIVE_USDC_DOMAIN = USDC_DOMAIN[ACTIVE_NETWORK];
 
 /**
  * x402 protocol version we negotiate with. The CDP facilitator currently

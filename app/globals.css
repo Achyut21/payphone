@@ -1,8 +1,28 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
+/**
+ * PayPhone color tokens (defined ONCE here per CONTEXT.md).
+ * Use named utilities in components — `bg-payphone-blue`, `text-payphone-ink`, etc.
+ * NEVER inline hex codes (e.g. `bg-[#0052FF]`) anywhere in components.
+ *
+ * Tailwind v4 reads `--color-*` CSS custom properties from `@theme` and
+ * generates corresponding utility classes automatically. Single source of truth.
+ */
+@theme {
+  --color-payphone-blue: #0052ff;
+  --color-payphone-bg: #fafafa;
+  --color-payphone-surface: #ffffff;
+  --color-payphone-ink: #0a0a0a;
+  --color-payphone-muted: #71717a;
+  --color-payphone-success: #10b981;
+  --color-payphone-border: #e4e4e7;
+}
+
+/* Background tokens used by the scaffold's default layout. Kept light-only
+ * (no dark mode for the hackathon, per CONTEXT.md "Light mode primary"). */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: var(--color-payphone-bg);
+  --foreground: var(--color-payphone-ink);
 }
 
 @theme inline {
@@ -10,13 +30,6 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
