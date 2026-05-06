@@ -31,7 +31,14 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} dark h-full antialiased`}
     >
-      <body className="flex min-h-full flex-col">
+      {/* `suppressHydrationWarning` on body: browser extensions like Kapture
+          (and dark-mode autoswitchers, password managers, etc.) inject classes
+          onto <body> before React hydrates, which would otherwise cause a
+          hydration error in dev. The flag tells React to tolerate body-level
+          class diffs without re-rendering — recommended by Next.js for this
+          exact extension-mutation case. Doesn't affect production correctness;
+          only suppresses the dev-only warning. */}
+      <body className="flex min-h-full flex-col" suppressHydrationWarning>
         {/* Navbar self-skips on `/session/<id>` (immersive video page). */}
         <Navbar />
         {/* `flex-1` makes the page content area fill remaining vertical space
