@@ -1,0 +1,19 @@
+# Auto-generated / dependency-managed files we should never format.
+node_modules
+.next
+out
+build
+coverage
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# Next.js generated types
+next-env.d.ts
+
+# Public assets
+public
+
+# Anything from docs/ should remain as-authored (it's our project log).
+# Comment the next line out if we want Prettier to canonicalize markdown.
+# docs

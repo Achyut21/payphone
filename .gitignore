@@ -33,6 +33,9 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# project planning / working docs — kept local, not pushed
+/docs/
+
 # vercel
 .vercel
 

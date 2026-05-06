@@ -26,6 +26,9 @@ importers:
       '@daily-co/daily-js':
         specifier: ^0.89.1
         version: 0.89.1
+      '@x402/core':
+        specifier: ^2.11.0
+        version: 2.11.0
       '@x402/evm':
         specifier: 2.9.0
         version: 2.9.0(typescript@5.9.3)
