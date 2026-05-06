@@ -15,11 +15,21 @@
  *   - status SETTLE_FAILED       → render with the failure surfaced in
  *                                  the badge area (still useful for the
  *                                  user to see the transcript/recap)
+ *
+ * M4.5 layout: wrapped in `<AuroraBackground showRadialGradient={false}>`
+ * for an even payphone-blue → payphone-orange haze across the whole
+ * page. The recap content is denser than the marketplace so we don't
+ * want the radial mask leaving half the page un-aurora'd. Navbar still
+ * shows on this route (Phase 2's regex `/^\/session\/[^/]+\/?$/` only
+ * skips on `/session/<id>`); the footer skips on any `/session/*` so
+ * the recap ends with its own back-to-marketplace CTA, not a sprawling
+ * site footer.
  */
 
 import { notFound, redirect } from 'next/navigation';
 
 import { Recap } from '@/components/Recap';
+import { AuroraBackground } from '@/components/ui/aurora-background';
 import { BASESCAN_TX_BASE_URL } from '@/lib/constants';
 import { getSession } from '@/lib/db';
 import { findExpertById } from '@/lib/seed';
@@ -54,6 +64,7 @@ export default async function RecapPage({ params }: RecapPageProps) {
 
   const expert = findExpertById(session.expert_id);
   const expertName = expert?.name ?? 'the expert';
+  const expertSpecialty = expert?.specialty ?? 'Live consultation';
 
   const settledUsd = formatUsd(session.settled_amount);
   const settleTxUrl = session.settle_tx_hash
@@ -63,16 +74,19 @@ export default async function RecapPage({ params }: RecapPageProps) {
   const settleFailed = session.status === 'SETTLE_FAILED';
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 px-6 py-10">
-      <Recap
-        sessionId={session.session_id}
-        expertName={expertName}
-        settledUsd={settledUsd}
-        settleTxUrl={settleTxUrl}
-        durationSec={durationSec}
-        settleFailed={settleFailed}
-        hasTranscript={(session.transcript?.length ?? 0) > 0}
-      />
-    </main>
+    <AuroraBackground className="min-h-screen flex-1" showRadialGradient={false}>
+      <main className="relative z-10 mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 px-6 pb-20 pt-28 sm:pt-32 md:pt-36">
+        <Recap
+          sessionId={session.session_id}
+          expertName={expertName}
+          expertSpecialty={expertSpecialty}
+          settledUsd={settledUsd}
+          settleTxUrl={settleTxUrl}
+          durationSec={durationSec}
+          settleFailed={settleFailed}
+          hasTranscript={(session.transcript?.length ?? 0) > 0}
+        />
+      </main>
+    </AuroraBackground>
   );
 }
