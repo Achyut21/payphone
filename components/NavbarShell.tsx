@@ -100,7 +100,7 @@ export function NavbarShell({ user }: { user: DemoUser | null }) {
           aria-expanded={mobileOpen}
           aria-controls="mobile-nav-drawer"
           aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-payphone-ink transition-colors hover:bg-payphone-surface-elevated md:hidden"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-payphone-ink transition-colors hover:bg-payphone-surface-elevated md:hidden"
         >
           {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
