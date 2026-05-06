@@ -66,6 +66,11 @@ export function SessionRoom({
   const callRef = useRef<DailyCall | null>(null);
   const [joined, setJoined] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Unix seconds (NOT ms). Set when the call ends — either because the
+  // user clicked our Leave button or Daily fired `left-meeting`. While
+  // null, the ticker counts up; once set, the ticker freezes at this
+  // value (so the displayed total matches what we'll settle for).
+  const [endedAt, setEndedAt] = useState<number | null>(null);
 
   // Mount the Daily iframe + join.
   //
@@ -103,7 +108,11 @@ export function SessionRoom({
           border: '0',
           borderRadius: '12px',
         },
-        showLeaveButton: true,
+        // Daily's built-in leave button shows a confirmation dialog and
+        // requires two clicks to fully tear down. We use our own button
+        // in the side panel instead — single source of truth, single
+        // click. Hides the in-iframe button entirely.
+        showLeaveButton: false,
         showFullscreenButton: true,
       });
       callRef.current = call;
@@ -217,6 +226,17 @@ export function SessionRoom({
         setError(msg);
       });
 
+      // Freeze the ticker the instant Daily confirms the local participant
+      // has left the room. This catches both paths: our Leave button (we
+      // also set endedAt optimistically there for zero-lag UX) and any
+      // edge case where Daily ends the call on its own (network drop,
+      // room expiry, kicked, etc.). setState is a no-op when the value
+      // is unchanged so the optimistic + confirmed paths don't fight.
+      call.on('left-meeting', () => {
+        if (cancelled) return;
+        setEndedAt((prev) => prev ?? Math.floor(Date.now() / 1000));
+      });
+
       try {
         // Token is what grants the `canAdmin: 'transcription'` permission
         // needed for `startTranscription()` to actually start. Without it,
@@ -302,13 +322,13 @@ export function SessionRoom({
             Running total
           </p>
           <div className="mt-1">
-            <Ticker startedAt={startedAt} />
+            <Ticker startedAt={startedAt} endedAt={endedAt} />
           </div>
         </div>
 
         <div className="mt-auto flex flex-col gap-2 text-sm text-payphone-muted">
           <p>
-            Hit <strong className="text-payphone-ink">Leave</strong> in the call to settle on-chain.
+            Hit <strong className="text-payphone-ink">Leave call</strong> below to settle on-chain.
             Daily fires <code>meeting.ended</code> → server settles for the actual duration → this
             page redirects to your recap.
           </p>
@@ -316,11 +336,25 @@ export function SessionRoom({
             variant="outline"
             size="sm"
             className="self-start"
+            disabled={endedAt !== null}
             onClick={() => {
+              // Freeze the ticker NOW (don't wait for `left-meeting` to
+              // fire) so the displayed total never advances past what
+              // we'll actually settle on-chain. The `left-meeting`
+              // listener is a backstop that no-ops if we already set
+              // this.
+              setEndedAt(Math.floor(Date.now() / 1000));
               void callRef.current?.leave();
             }}
           >
-            Leave call
+            {endedAt !== null ? (
+              <>
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                Settling…
+              </>
+            ) : (
+              'Leave call'
+            )}
           </Button>
         </div>
       </aside>
