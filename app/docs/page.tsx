@@ -151,7 +151,7 @@ export default function DocsPage() {
       style={{
         backgroundColor: 'var(--color-payphone-bg)',
         backgroundImage:
-          'radial-gradient(circle at center, color-mix(in srgb, var(--color-payphone-ink-muted) 25%, transparent) 1.5px, transparent 1.5px)',
+          'radial-gradient(circle at center, color-mix(in srgb, var(--color-payphone-ink-muted) 15%, transparent) 1px, transparent 1px)',
         backgroundSize: '24px 24px',
       }}
     >
