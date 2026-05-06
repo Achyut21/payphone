@@ -24,6 +24,7 @@ The pitch in three lines:
 | **M2**    | Swap `exact` → `upto` (Permit2 witness) on Sepolia   | ✅ done (May 6)   |
 | **M3**    | Daily.co video rooms + DDB + duration-derived settle | ✅ done (May 6)   |
 | **M4**    | Marketplace UI + live session + AI recap & chat      | ✅ done (May 6)   |
+| **M4.5**  | UI/UX overhaul: dark mode landing + navbar + polish  | ✅ done (May 6)   |
 | M5        | Mainnet flip + on-stage live demo                    | next              |
 
 ### M1 proof
@@ -108,11 +109,14 @@ follow-up chat — both grounded in the actual call transcript.**
   triggers the M3 x402 round-trip → live session page with iframe + ticker →
   realtime transcription captured client-side and POSTed to the server → recap
   page streams the LLM summary as soon as the call settles
-- **End-to-end flow (browser):**
-  1. `GET /` → edge `proxy.ts` checks cookie → if missing, 302 to `/login`
-  2. `/login` server-action sets the cookie, redirects to `/` with the seeded
-     four-expert marketplace
-  3. Click "Talk to ..." → `<form action={startSession}>` runs the server
+- **End-to-end flow (browser, post-M4.5):**
+  1. `GET /` → public marketing landing renders (hero, how-it-works, live
+     last-call widget, expert preview). No cookie required.
+  2. Click `Get started` (or any `Talk to ...` on the expert preview) → goes
+     to `/login`. The `loginAction` server action sets the `payphone-user`
+     cookie and 302s to `/marketplace`.
+  3. `/marketplace` (cookie-gated by edge `proxy.ts`) — four seeded experts.
+     Click "Talk to ..." → `<form action={startSession}>` runs the server
      action, which calls `lib/agent.ts` → `POST /api/sessions` → x402 verify
      against $5.00 max → Daily room created → DDB row written → redirect to
      `/session/[id]`
@@ -128,6 +132,55 @@ follow-up chat — both grounded in the actual call transcript.**
      streams the AI summary via `summarize()` → useChat-driven chat box
      answers follow-ups via `chatWithContext()`, both pinning the transcript
      as system context
+
+### M4.5 proof
+
+Same M4 backend, redesigned face. **No on-chain, no API, no DDB schema
+changes — every M4 proof above still holds.** This milestone takes the
+project from "wired prototype" to "submission-grade UI."
+
+- **Routes reorganized.** `/` is now a public marketing landing (was the
+  marketplace). `/marketplace` is the cookie-gated expert browse (was at
+  `/`). `/docs` is a new public technical writeup. The login flow is now
+  `/` → `/login` → `/marketplace` → call.
+- **Dark-mode design system.** Custom palette (`payphone-bg #0A0A0A`,
+  `payphone-blue #0052FF`, `payphone-orange #FF6B35`, `payphone-success
+#10B981`, etc.) wired through Tailwind v4 tokens. Aceternity UI components
+  (`AuroraBackground`, `BackgroundBeamsWithCollision`, `Spotlight`,
+  `FloatingNavbar`) recolored to the palette and used for hero/marketplace/
+  recap/login backgrounds.
+- **Sticky floating navbar** with active-route underline, mobile drawer,
+  user pill with logout. Self-skips on the immersive `/session/<id>` page.
+- **Marketing landing** (`/`) — `BackgroundBeamsWithCollision` hero,
+  how-it-works 3-card breakdown, **live last-call widget** server-fetched
+  via the new `getLatestCompletedSession()` helper (falls back to the M4
+  canonical session when no fresh settled rows exist), built-on badges
+  (Base, Daily, Coinbase, Anthropic, AWS), expert preview row.
+- **Docs page** (`/docs`) — TLDR, hand-rolled SVG architecture diagram with
+  three phases (AUTHORIZE / TALK / SETTLE), 4-card RATIONALE block,
+  4-card MILESTONES block linking out to M1/M2/M3/M4 BaseScan transactions,
+  TECH_STACK table, MITIGATIONS list, open-source footer.
+- **Live session page** (`/session/<id>`) redesign — mobile vertical stack
+  with sticky `$X.XX` mini-bar, desktop 70/30 horizontal split with sticky
+  ticker sidebar, ON AIR badge with pulsing dot, in-call live transcript
+  panel showing both speakers (additive over M4, doesn't change DDB POST
+  invariant), big payphone-orange "End call & settle" button.
+- **Recap page** (`/session/<id>/recap`) redesign — settle status card with
+  pulsing payphone-success "Settled on-chain" badge, big mono `$X.XX · m:ss`
+  display, BaseScan link in payphone-orange chip, AI summary card with
+  `Sparkles` eyebrow, follow-up chat with payphone-blue user bubbles.
+- **Mobile-first throughout.** Hamburger button bumped to 44×44 (Apple
+  HIG), responsive grids start at `grid-cols-1`, headlines use
+  `text-balance` for natural reflow, container max-w + padding consistent
+  across all six pages.
+- **Backend wiring preserved verbatim.** `SessionRoom.tsx` and `Recap.tsx`
+  redesigns rewrote JSX while keeping every effect / state / event handler
+  byte-for-byte identical to M4 — Strict-Mode-safe Daily singleton, all
+  four transcription listeners, local-participant POST de-dup filter, 2s
+  status poll, ticker freeze, streaming summary fetch + AbortController,
+  `useChat` + `DefaultChatTransport`, auto-scroll. The M4 canonical session
+  `c0a5c8df-...` (84.84s, $0.84, tx `0x47dab9fe...`) remains the
+  source-of-truth proof that the call → settle → recap → chat path works.
 
 ## Stack
 
@@ -297,7 +350,7 @@ pnpm tsx scripts/inspect-session.ts <sessionId>           # printed by buyer-age
 # Add --transcript to also dump the captured lines.
 ```
 
-### M4: full browser flow (marketplace → live call → recap + chat)
+### M4: full browser flow (landing → marketplace → live call → recap + chat)
 
 Same three-terminal setup as M3 (dev server + ngrok + Daily webhook registered).
 The buyer is no longer the CLI — the whole loop runs in the browser.
@@ -313,23 +366,33 @@ ngrok http --url=<your-ngrok-domain>.ngrok-free.dev 3000  # Terminal 2
 
 Then open <http://localhost:3000/> in your browser:
 
-1. **Login** — pick one of the four seeded users (Alice / Bob / Charlie / Diana).
-   Cookie auth, no password (the seeded users aren't a security boundary —
-   they're a demo aid).
-2. **Marketplace** — four seeded experts (Solidity, Rust, UX, DevOps). Click
-   **Talk to ...** on any card.
-3. **Live session** — Daily iframe loads, ticker counts up at $0.01/sec in
-   payphone-blue. Open the same `/session/<id>` URL in a second tab/browser
-   to act as the expert. Talk for ~30–60 seconds. The transcript is captured
-   in real time and POSTed to the server.
-4. Click **Leave call** in the side panel — the ticker freezes immediately at
-   the displayed value (which is what the on-chain settle will use).
-5. **Auto-redirect to recap** — within ~5–15s the webhook fires, settle
+1. **Landing page** (`/`) — public marketing page with the live last-call
+   widget. Click `Get started` in the navbar (or any expert preview card)
+   to proceed.
+2. **Login** (`/login`) — pick one of the four seeded users (Alice / Bob /
+   Charlie / Diana). Cookie auth, no password (the seeded users aren't a
+   security boundary — they're a demo aid). Redirects to `/marketplace` on
+   success.
+3. **Marketplace** (`/marketplace`, cookie-gated) — four seeded experts
+   (Solidity, Rust, UX, DevOps). Click **Talk to ...** on any card.
+4. **Live session** — Daily iframe loads, ticker counts up at $0.01/sec in
+   the sticky sidebar (desktop) or top mini-bar (mobile), ON AIR badge
+   pulsing in the corner. Open the same `/session/<id>` URL in a second
+   tab/browser to act as the expert. Talk for ~30–60 seconds. The transcript
+   is captured in real time, displayed in the in-call panel, and POSTed to
+   the server.
+5. Click **End call & settle** — the ticker freezes immediately at the
+   displayed value (which is what the on-chain settle will use).
+6. **Auto-redirect to recap** — within ~5–15s the webhook fires, settle
    completes, and the page navigates to `/session/<id>/recap`. The Haiku
    summary streams in (Topic / Key points / Action items / Open questions),
    followed by a chat box where you can ask follow-up questions about the
    call (every answer is grounded in the captured transcript).
-6. **BaseScan link** in the recap header takes you to the on-chain settle.
+7. **BaseScan link** in the recap header takes you to the on-chain settle.
+
+For a quick architectural overview without running the demo, visit `/docs` —
+public, no auth required, includes an SVG architecture diagram and links to
+each milestone's BaseScan transaction.
 
 Inspect any session you've created from the browser:
 
@@ -358,25 +421,37 @@ Living under `scripts/`:
 
 ```
 app/
-  page.tsx                            (M4) marketplace landing for logged-in users
-  layout.tsx                          root layout, metadata, fonts
-  globals.css                         Tailwind v4 @theme + payphone tokens + typography plugin
-  login/page.tsx                      (M4) seeded-user login (server action)
+  page.tsx                            (M4.5) public marketing landing — hero, how-it-works, live last-call, expert preview
+  marketplace/page.tsx                (M4.5) cookie-gated expert browse (was at app/page.tsx in M4)
+  docs/page.tsx                       (M4.5) public docs page — architecture diagram, milestones, tech stack
+  layout.tsx                          root layout, metadata, fonts, Navbar/Footer (suppressHydrationWarning on body)
+  globals.css                         Tailwind v4 @theme + payphone M4.5 tokens + typography plugin + aurora keyframe
+  login/page.tsx                      (M4) seeded-user login (server action) — redesigned with Spotlight bg in M4.5
   _actions/session.ts                 (M4) startSession server action — kicks off /api/sessions
+  _actions/auth.ts                    (M4.5) logoutAction — clears cookie + redirect to /
   session/[id]/page.tsx               (M4) live session page (mints meeting token, renders SessionRoom)
-  session/[id]/recap/page.tsx         (M4) post-call recap page (fetches DDB row, renders Recap)
+  session/[id]/recap/page.tsx         (M4) post-call recap page (M4.5: wraps in AuroraBackground)
   api/sessions/route.ts               x402-protected session creation: verify, createRoom, persist
   api/sessions/[id]/status/route.ts   (M4) GET — current status, used by client polling
   api/sessions/[id]/transcript/route.ts (M4) POST — append a transcript line to DDB
   api/sessions/[id]/recap/route.ts    (M4) GET — streams Haiku-generated markdown summary
   api/sessions/[id]/chat/route.ts     (M4) POST — streams Haiku follow-up chat answers
   api/webhooks/daily/route.ts         Daily meeting.ended handler: HMAC, settle, mark COMPLETED
-proxy.ts                              (M4) Next 16 edge proxy — cookie auth gate for /, /session/*
+proxy.ts                              Next 16 edge proxy — cookie gate for /marketplace, /session/* (M4.5: was for / in M4)
 components/
-  ExpertCard.tsx                      (M4) marketplace card with avatar + Lucide icon + "Talk to" form
-  SessionRoom.tsx                     (M4) Daily iframe + ticker + transcription + status polling
+  Navbar.tsx                          (M4.5) server — fetches user, hands to NavbarShell, self-skips on /session/<id>
+  NavbarShell.tsx                     (M4.5) client — Aceternity floating navbar with mobile drawer, user pill, active highlight
+  Footer.tsx                          (M4.5) three-column footer — self-skips on /session/* (call + recap)
+  ExpertCard.tsx                      (M4) marketplace card — redesigned in M4.5 (orange rate badge, hover lift, flex-1 footer)
+  ExpertCardSubmitButton.tsx          (M4.5) client wrapper using useFormStatus for spinner during startSession
+  LoginPersonaButton.tsx              (M4.5) client wrapper using useFormStatus on the persona pick button
+  SessionRoom.tsx                     (M4) Daily iframe + ticker + transcription + status polling — M4.5 redesigned JSX, backend identical
   Ticker.tsx                          (M4) live $X.XX billing ticker, freezes on call end
-  Recap.tsx                           (M4) recap UI with streamed summary + useChat follow-up
+  Recap.tsx                           (M4) recap UI — M4.5 redesigned JSX, backend identical (settle status card, M4.5 chat palette)
+  ui/aurora-background.tsx            (M4.5) Aceternity — recolored to payphone palette, used on /marketplace + /session/<id>/recap
+  ui/background-beams-with-collision.tsx (M4.5) Aceternity — recolored, used on landing hero
+  ui/spotlight-new.tsx                (M4.5) Aceternity — recolored, used on /login
+  ui/floating-navbar.tsx              (M4.5) Aceternity primitive — base for NavbarShell
   ui/                                 shadcn primitives (button, card, input, avatar, badge, …)
 infra/terraform/                      AWS infra-as-code (DDB table + scoped runtime IAM)
 lib/
@@ -384,10 +459,10 @@ lib/
   cdp.ts                              CDP client singleton + buyer/seller account accessors
   x402.ts                             facilitator client + retry-with-backoff settle
   daily.ts                            Daily REST + webhook HMAC + (M4) meeting tokens
-  db.ts                               DynamoDB doc client + session CRUD + (M4) appendTranscript
+  db.ts                               DynamoDB doc client + session CRUD + (M4) appendTranscript + (M4.5) getLatestCompletedSession
   agent.ts                            (M4) `requestSession` — shared by CLI + server action
   auth.ts                             (M4) cookie helpers (getCurrentUser / setCurrentUser)
-  seed.ts                             (M4) demo users + experts
+  seed.ts                             (M4) demo users + experts (M4.5: tagline field added)
   avatar.ts                           (M4) DiceBear hosted-CDN avatar URLs
   haiku.ts                            (M4) Anthropic Haiku via Vercel AI SDK — summarize + chat
   utils.ts                            (M4) shadcn `cn` helper
