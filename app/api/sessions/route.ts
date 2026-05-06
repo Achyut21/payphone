@@ -1,42 +1,40 @@
 /**
- * POST /api/sessions — x402-protected session creation (M2).
+ * POST /api/sessions — x402-protected session creation (M3).
  *
- * Behavior (RESEARCH_DOSSIER.md §1, §2):
- *   1. No PAYMENT-SIGNATURE header   → HTTP 402 + PaymentRequired (upto, MAX=$5)
- *   2. Header present + invalid      → HTTP 402 + reason
- *   3. Header present + valid        → call /verify with MAX, then /settle
- *      with ACTUAL=$0.30 (the proxy enforces actual ≤ MAX on-chain)
- *      - settle success              → HTTP 200 { sessionId, paymentTx,
- *                                                 maxAuthorized, settled }
- *      - settle fail after 3 retries → HTTP 402 + reason
+ * The M3 shape, vs. M2:
+ *   - M2 verified the buyer's upto witness, then immediately settled for a
+ *     hardcoded $0.30, then returned the tx hash. The "session" was just
+ *     a UUID with no persistence and no video.
+ *   - M3 verifies the witness, creates a real Daily.co room, persists a
+ *     session row in DynamoDB, and returns `{ sessionId, roomUrl,
+ *     maxAuthorized }` WITHOUT settling. Settlement now happens in
+ *     `/api/webhooks/daily` when the meeting ends, with the duration-
+ *     derived amount instead of a hardcoded one.
  *
- * M2 swaps the M1 `exact` scheme for `upto` on Base Sepolia. The buyer
- * signs a Permit2 witness over `permitted.amount = M2_UPTO_MAX_ATOMIC`
- * ($5); the server then asks the facilitator to settle for
- * `M2_DEMO_SETTLE_ATOMIC` ($0.30). On-chain the x402UptoPermit2Proxy
- * reverts with `AmountExceedsPermitted` if settle.amount > permit.amount,
- * so the asymmetry is enforced by the contract, not by trust. The unspent
- * $4.70 simply never moves — that's the per-second-billing primitive M3
- * will use to charge for actual call duration.
+ * Why defer settle to the webhook:
+ *   The whole point of `upto` is that the on-chain settle amount is
+ *   driven by actual usage, not by what was charged at request time.
+ *   That requires waiting for the meeting to end. Permit2 nonce
+ *   single-use property still prevents double-spend; the buyer's
+ *   signature stays valid until `deadline` (now + UPTO_VALIDITY_SECONDS)
+ *   and is consumed exactly once when the webhook calls `settle()`.
  *
- * `extensions` advertises `eip2612GasSponsoring` so the buyer signs a
- * USDC EIP-2612 permit if Permit2 has zero allowance from this wallet.
- * The facilitator submits permit() + Permit2 transferFrom in one tx,
- * paying gas. We also advertise `erc20ApprovalGasSponsoring` as a fallback
- * for clients that can sign full transactions (CDP can't currently, but
- * doesn't hurt to declare).
+ * Failure modes (and what happens):
+ *   - Verify fails:  HTTP 402 + reason. No room created, no DDB write.
+ *   - Daily fails:   HTTP 500. Buyer's signature stays unused on-chain;
+ *                    the Permit2 nonce expires naturally at deadline. No
+ *                    funds moved.
+ *   - DDB fails:     HTTP 500. Daily room exists but is orphan (auto-
+ *                    expires at room.exp). Same: no on-chain effect.
+ *   - All success:   HTTP 200 with sessionId/roomUrl/maxAuthorized.
+ *                    Buyer opens roomUrl. Webhook handles settlement.
  *
- * NOTE: nodejs runtime — Edge runtime breaks the CDP SDK's ed25519 JWT
- * signer (uses Node's crypto module, not Web Crypto).
+ * `runtime = 'nodejs'` because CDP SDK + AWS SDK are both Node-only.
  */
 
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
-import {
-  decodePaymentSignatureHeader,
-  encodePaymentRequiredHeader,
-  encodePaymentResponseHeader,
-} from '@x402/core/http';
+import { decodePaymentSignatureHeader, encodePaymentRequiredHeader } from '@x402/core/http';
 import type { PaymentPayload, PaymentRequired, PaymentRequirements } from '@x402/core/types';
 
 import {
@@ -44,30 +42,32 @@ import {
   ACTIVE_CDP_FACILITATOR_ADDRESS,
   ACTIVE_USDC_ADDRESS,
   ACTIVE_USDC_DOMAIN,
-  M2_DEMO_SETTLE_ATOMIC,
-  M2_DEMO_SETTLE_USD,
   M2_UPTO_MAX_ATOMIC,
   M2_UPTO_MAX_USD,
   UPTO_VALIDITY_SECONDS,
   X402_VERSION,
 } from '@/lib/constants';
 import { getSellerAddress } from '@/lib/cdp';
-import { settleWithRetry, verify } from '@/lib/x402';
+import { verify } from '@/lib/x402';
+import { createRoom } from '@/lib/daily';
+import { createSession, type SessionRow } from '@/lib/db';
 
 export const runtime = 'nodejs';
 
+/** TTL for the DDB session row: 24h after creation. M5 stretch may shorten. */
+const SESSION_ROW_TTL_SECONDS = 24 * 60 * 60;
+
 /**
- * Build the PaymentRequirements for this request. The SAME object (deep-equal)
- * must be used both in the 402 response AND in /verify. For /settle we clone
- * and override `amount` to the actual settlement value — the buyer's signed
- * Permit2 witness allows any settle amount ≤ permitted.amount.
+ * Build the PaymentRequirements for verify. The webhook reconstructs this
+ * exact shape (same payTo, same MAX amount) and spreads `{ ..., amount:
+ * durationDerived }` for settle. The buyer's witness is signed over the
+ * EIP-712 hash of the MAX requirements, so verify and the original
+ * signing context must match byte-for-byte; only `amount` legally varies
+ * at settle time per the upto scheme.
  *
- * `extra.facilitatorAddress` is mandatory for the upto scheme: the witness
- * binds settlement to that address so only the CDP facilitator can call
- * settle() on the x402UptoPermit2Proxy.
- *
- * `extra.name` / `extra.version` carry the USDC EIP-712 domain bits for
- * the EIP-2612 permit the gas-sponsoring extension may sign.
+ * `extra.facilitatorAddress` is mandatory: the witness binds settlement
+ * to that address so only the CDP facilitator's signer can call settle()
+ * on the proxy.
  */
 function buildRequirements(payTo: `0x${string}`, amountAtomic: bigint): PaymentRequirements {
   return {
@@ -90,13 +90,6 @@ function buildRequirements(payTo: `0x${string}`, amountAtomic: bigint): PaymentR
   };
 }
 
-/**
- * Build the 402 response body advertising what payment we'll accept. The
- * `extensions` field declares the gas-sponsoring extensions the facilitator
- * supports; the buyer's @x402/evm UptoEvmScheme reads these and signs an
- * EIP-2612 permit (or, fallback, a real ERC-20 approval tx) when the buyer
- * wallet's Permit2 allowance is insufficient.
- */
 function buildPaymentRequired(
   resourceUrl: string,
   requirements: PaymentRequirements,
@@ -107,12 +100,10 @@ function buildPaymentRequired(
     ...(errorMessage ? { error: errorMessage } : {}),
     resource: {
       url: resourceUrl,
-      description: `PayPhone session creation — up to $${M2_UPTO_MAX_USD} USDC on Base Sepolia (M2)`,
+      description: `PayPhone session — up to $${M2_UPTO_MAX_USD} USDC on Base Sepolia (M3)`,
       mimeType: 'application/json',
     },
     accepts: [requirements],
-    // Each value is a per-extension config object; an empty object is fine
-    // because the @x402/evm client only checks for the KEY's presence.
     extensions: {
       eip2612GasSponsoring: {},
       erc20ApprovalGasSponsoring: {},
@@ -120,25 +111,35 @@ function buildPaymentRequired(
   };
 }
 
-/**
- * Build a 402 NextResponse. The x402 v2 client reads PaymentRequired from
- * the `PAYMENT-REQUIRED` response header (base64 JSON). The JSON body is
- * informational only for v2 (and a fallback for v1 clients).
- */
 function paymentRequiredResponse(paymentRequired: PaymentRequired): NextResponse {
   return NextResponse.json(paymentRequired, {
     status: 402,
     headers: {
       'PAYMENT-REQUIRED': encodePaymentRequiredHeader(paymentRequired),
-      'Access-Control-Expose-Headers': 'PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-PAYMENT-RESPONSE',
+      'Access-Control-Expose-Headers': 'PAYMENT-REQUIRED',
     },
   });
 }
 
+/**
+ * Encode the buyer's signed PaymentPayload for storage in DDB. We round-
+ * trip this verbatim into the webhook so settle uses the exact same
+ * bytes. JSON.stringify → utf-8 → base64 keeps it as an ASCII-safe DDB
+ * string attribute; base64 (vs hex) saves ~25% on a payload that's a
+ * couple of KB.
+ *
+ * Sensitivity: this contains a Permit2 witness signature, NOT the wallet's
+ * private key. Anyone holding it could try to submit settle, but settle
+ * is bound to `extra.facilitatorAddress` (the CDP facilitator) so only
+ * they can actually use it. We still treat it as scoped data — only the
+ * runtime IAM user with table-only access can read it.
+ */
+function encodePaymentPayloadForStorage(payload: PaymentPayload): string {
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const sellerAddress = await getSellerAddress();
-  // VERIFY-time requirements: amount = MAX ($5). The buyer's signature is
-  // produced over THIS object's amount; verify checks the EIP-712 hash matches.
   const verifyRequirements = buildRequirements(sellerAddress, M2_UPTO_MAX_ATOMIC);
   const resourceUrl = new URL(request.url).toString();
 
@@ -158,6 +159,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // 1. Verify with MAX. The facilitator validates the signature against a
   //    Permit2 witness for $5 — that's what the buyer actually signed.
+  //    Settle is deferred to the webhook (M3 change vs M2).
   const verifyResponse = await verify(paymentPayload, verifyRequirements);
   if (!verifyResponse.isValid) {
     const reason = verifyResponse.invalidReason ?? 'verify rejected';
@@ -167,44 +169,68 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
-  // 2. Settle for the ACTUAL amount ($0.30). Same requirements, only `amount`
-  //    differs. The proxy's settle(permit, amount, owner, witness, sig) takes
-  //    the on-chain transfer amount as a separate parameter from the signed
-  //    permit.permitted.amount — and reverts if amount > permitted.amount.
-  //    M3 replaces M2_DEMO_SETTLE_ATOMIC with a duration-derived value.
-  const settleRequirements: PaymentRequirements = {
-    ...verifyRequirements,
-    amount: M2_DEMO_SETTLE_ATOMIC.toString(),
-  };
-  const settleResponse = await settleWithRetry(paymentPayload, settleRequirements);
-  if (!settleResponse.success) {
-    const reason = settleResponse.errorReason ?? 'settle failed';
-    const detail = settleResponse.errorMessage ?? '';
-    return paymentRequiredResponse(
-      buildPaymentRequired(resourceUrl, verifyRequirements, `${reason}: ${detail}`.trim()),
+  // 2. Mint a session id and create the Daily room. We do Daily BEFORE the
+  //    DDB write so we can store room_id/url in the same PutItem (single
+  //    write, simpler failure surface). If Daily fails here, no DDB row
+  //    exists and the buyer's witness goes unused on-chain — same outcome
+  //    as a verify-only request.
+  const sessionId = randomUUID();
+  let room;
+  try {
+    room = await createRoom();
+  } catch (err) {
+    console.error('[sessions] Daily createRoom failed:', err);
+    return NextResponse.json(
+      { error: 'video_room_creation_failed', detail: err instanceof Error ? err.message : '' },
+      { status: 500 },
     );
   }
 
-  // 3. Payment settled. Return the asymmetry on the wire so the client
-  //    can verify on BaseScan that the actual transfer is `settled`, not
-  //    `maxAuthorized`. M3 will write the session row to DDB before this
-  //    response so a server crash mid-settle doesn't orphan the tx.
-  const sessionId = randomUUID();
+  // 3. Persist the session. status=AUTHORIZED — the webhook flips to
+  //    COMPLETED on settle success (atomically, conditional on still
+  //    being AUTHORIZED, which guards against double-settle on retries).
+  const startedAt = Math.floor(Date.now() / 1000);
+  const payer =
+    (verifyResponse.payer as `0x${string}` | undefined) ??
+    ((paymentPayload.payload as { permit?: { permitted?: { owner?: string } } } | undefined)?.permit
+      ?.permitted?.owner as `0x${string}` | undefined) ??
+    ('0x0000000000000000000000000000000000000000' as `0x${string}`);
+  const row: SessionRow = {
+    session_id: sessionId,
+    // M3 has no real auth/marketplace yet (M4). Use sentinel ids until then.
+    user_id: 'seed-buyer',
+    expert_id: 'seed-expert',
+    agent_wallet_addr: payer,
+    payment_authorization_payload: encodePaymentPayloadForStorage(paymentPayload),
+    video_room_id: room.name, // 'name' matches the webhook payload's `room` field
+    video_room_url: room.url,
+    started_at: startedAt,
+    max_authorized_amount: Number(M2_UPTO_MAX_ATOMIC),
+    status: 'AUTHORIZED',
+    expires_at: startedAt + SESSION_ROW_TTL_SECONDS,
+  };
+  try {
+    await createSession(row);
+  } catch (err) {
+    console.error('[sessions] DDB createSession failed:', err);
+    return NextResponse.json(
+      { error: 'session_persist_failed', detail: err instanceof Error ? err.message : '' },
+      { status: 500 },
+    );
+  }
+
+  // 4. Hand the room URL back. Buyer joins; meeting.ended webhook will
+  //    drive settlement. We deliberately do NOT include a paymentTx here
+  //    — there isn't one yet, and surfacing one would be misleading.
   return NextResponse.json(
     {
       sessionId,
-      paymentTx: settleResponse.transaction,
+      roomUrl: room.url,
       maxAuthorized: M2_UPTO_MAX_USD,
-      settled: M2_DEMO_SETTLE_USD,
-      payer: settleResponse.payer ?? verifyResponse.payer ?? null,
-      network: settleResponse.network,
+      payer,
+      network: ACTIVE_CAIP2,
+      status: 'AUTHORIZED',
     },
-    {
-      status: 200,
-      headers: {
-        'PAYMENT-RESPONSE': encodePaymentResponseHeader(settleResponse),
-        'Access-Control-Expose-Headers': 'PAYMENT-RESPONSE, X-PAYMENT-RESPONSE',
-      },
-    },
+    { status: 200 },
   );
 }

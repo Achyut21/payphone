@@ -1,7 +1,11 @@
 /**
- * PayPhone — M2 buyer agent.
+ * PayPhone — M3 buyer agent.
  *
- * Drives the x402 round-trip end-to-end with the `upto` scheme:
+ * Drives the x402 round-trip with the `upto` scheme, the same way M2 did,
+ * but expects an M3-shape response: HTTP 200 with `{ sessionId, roomUrl,
+ * maxAuthorized }` and NO settlement yet. Settlement now happens later
+ * when the meeting ends and the Daily.co webhook fires.
+ *
  *   1. Resolves the CDP-managed buyer wallet (idempotent — same address as
  *      the wallet from M0: 0xE01669A01E28E905055Ac6cD33c19ced7e10d870).
  *   2. Wraps it as an x402 ClientEvmSigner.
@@ -17,7 +21,10 @@
  *           a USDC EIP-2612 permit so the facilitator can perform the
  *           one-time approve gaslessly,
  *        d. encodes everything as PAYMENT-SIGNATURE and retries the request.
- *   4. Server settles for $0.30 (NOT $5). Prints the asymmetry + tx hash.
+ *   4. Server creates the Daily room + DDB row (status=AUTHORIZED) and
+ *      returns the room URL. The buyer agent prints it prominently and
+ *      exits — joining the room and ending the call is a manual step
+ *      until M4.
  *
  * Run with:  pnpm tsx scripts/buyer-agent.ts
  *
@@ -34,12 +41,7 @@ import { wrapFetchWithPayment, x402Client } from '@x402/fetch';
 import { UptoEvmScheme } from '@x402/evm/upto/client';
 import type { ClientEvmSigner } from '@x402/evm';
 
-import {
-  ACTIVE_CAIP2,
-  ACTIVE_NETWORK,
-  ACTIVE_PUBLIC_RPC_URL,
-  BASESCAN_TX_BASE_URL,
-} from '../lib/constants';
+import { ACTIVE_CAIP2, ACTIVE_NETWORK, ACTIVE_PUBLIC_RPC_URL } from '../lib/constants';
 import { getBuyerAccount } from '../lib/cdp';
 
 const SERVER_URL = process.env.SERVER_URL ?? 'http://localhost:3000';
@@ -81,7 +83,7 @@ async function main(): Promise<void> {
   const response = await fetchWithPayment(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ topic: 'M2 upto round-trip test' }),
+    body: JSON.stringify({ topic: 'M3 video session test' }),
   });
 
   const bodyText = await response.text();
@@ -92,11 +94,11 @@ async function main(): Promise<void> {
 
   let body: {
     sessionId?: string;
-    paymentTx?: string;
+    roomUrl?: string;
     maxAuthorized?: string;
-    settled?: string;
     payer?: string;
     network?: string;
+    status?: string;
   };
   try {
     body = JSON.parse(bodyText);
@@ -107,13 +109,28 @@ async function main(): Promise<void> {
 
   console.log(`[buyer-agent] HTTP 200 OK`);
   console.log(`[buyer-agent]   sessionId:     ${body.sessionId}`);
-  console.log(`[buyer-agent]   paymentTx:     ${body.paymentTx}`);
   console.log(`[buyer-agent]   maxAuthorized: $${body.maxAuthorized ?? '(unknown)'}`);
-  console.log(`[buyer-agent]   settled:       $${body.settled ?? '(unknown)'}`);
+  console.log(`[buyer-agent]   status:        ${body.status ?? '(unknown)'}`);
   console.log(`[buyer-agent]   payer:         ${body.payer ?? '(unknown)'}`);
   console.log(`[buyer-agent]   network:       ${body.network ?? '(unknown)'}`);
-  if (body.paymentTx) {
-    console.log(`[buyer-agent]   BaseScan:      ${BASESCAN_TX_BASE_URL}${body.paymentTx}`);
+
+  if (body.roomUrl) {
+    console.log('');
+    console.log('🎥 Open this URL in TWO browser tabs to test M3 settlement:');
+    console.log('');
+    console.log(`   ${body.roomUrl}`);
+    console.log('');
+    console.log('   Talk for ~30–60 seconds, then click "Leave" in either tab.');
+    console.log('   Daily will fire `meeting.ended` to /api/webhooks/daily,');
+    console.log('   which will compute duration × rate, settle on-chain, and');
+    console.log('   mark the DDB row COMPLETED.');
+    console.log('');
+    if (body.sessionId) {
+      console.log('🔍 After hangup, inspect the final state with:');
+      console.log('');
+      console.log(`   pnpm tsx scripts/inspect-session.ts ${body.sessionId}`);
+      console.log('');
+    }
   }
 }
 

@@ -136,3 +136,43 @@ const BASESCAN_TX_BASE_URLS = {
 } as const;
 
 export const BASESCAN_TX_BASE_URL: string = BASESCAN_TX_BASE_URLS[ACTIVE_NETWORK];
+
+/**
+ * M3 — duration-derived per-second billing.
+ *
+ * The buyer's upto witness authorizes up to `M2_UPTO_MAX_ATOMIC` ($5). At
+ * meeting hangup the Daily webhook reports `duration_sec`; we settle for
+ * `duration_sec × M3_PER_SECOND_RATE_ATOMIC`, capped at the upto MAX. This
+ * is the per-second-billing primitive M2 set up the rails for.
+ *
+ * Rate: $0.01/sec = 10_000 atomic units. Matches the demo line "$0.10 every
+ * 10 seconds" — round numbers on stage are easier to follow than a more
+ * realistic rate like $2/min would be.
+ */
+export const M3_PER_SECOND_RATE_ATOMIC = 10_000n;
+
+/**
+ * Compute the on-chain settle amount in USDC atomic units from a call
+ * duration in seconds. Floors to whole seconds and clamps the lower bound
+ * to 0 (defensive — if Daily ever sends a negative or NaN duration we
+ * settle for $0 rather than a negative permit overflow). Clamps the upper
+ * bound to `M2_UPTO_MAX_ATOMIC` ($5) — beyond that the on-chain proxy
+ * would revert with `AmountExceedsPermitted` anyway, but capping here
+ * gives us a clean settle instead of a failed retry loop.
+ */
+export function computeSettleAmount(durationSec: number): bigint {
+  const seconds = Number.isFinite(durationSec) ? Math.max(0, Math.floor(durationSec)) : 0;
+  const raw = BigInt(seconds) * M3_PER_SECOND_RATE_ATOMIC;
+  return raw > M2_UPTO_MAX_ATOMIC ? M2_UPTO_MAX_ATOMIC : raw;
+}
+
+/**
+ * Daily room expiration window: 30 minutes from creation. Same value as
+ * `UPTO_VALIDITY_SECONDS` by design — the room cannot outlive the buyer's
+ * Permit2 authorization, otherwise a guest could keep the call running
+ * past the deadline and we'd have an unsettleable session. They're kept
+ * as separate constants for conceptual clarity (one bounds chain state,
+ * the other bounds Daily room state) even though they happen to share
+ * a numeric value today.
+ */
+export const DAILY_ROOM_TTL_SECONDS = 30 * 60;
