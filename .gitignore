@@ -51,3 +51,8 @@ infra/terraform/.terraform.lock.hcl
 infra/terraform/crash.log
 infra/terraform/crash.*.log
 
+# agent skills — keep the SKILL.md + cli.md/customization.md/mcp.md/evals/
+# but NOT the per-rule MD files; those bloat the repo without adding value
+# beyond the SKILL.md entry point.
+.agents/skills/shadcn/rules/
+

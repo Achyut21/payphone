@@ -1,31 +1,63 @@
 @import 'tailwindcss';
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
 @plugin "@tailwindcss/typography";
 /*---break---
  */
 @custom-variant dark (&:is(.dark *));
 
 /**
- * PayPhone color tokens (defined ONCE here per CONTEXT.md).
- * Use named utilities in components — `bg-payphone-blue`, `text-payphone-ink`, etc.
- * NEVER inline hex codes (e.g. `bg-[#0052FF]`) anywhere in components.
+ * PayPhone color tokens — dark-mode primary (M4.5).
+ *
+ * Defined ONCE here per CONTEXT.md. Use named utilities in components —
+ * `bg-payphone-blue`, `text-payphone-ink`, etc. NEVER inline hex codes
+ * (e.g. `bg-[#0052FF]`) anywhere in components.
  *
  * Tailwind v4 reads `--color-*` CSS custom properties from `@theme` and
- * generates corresponding utility classes automatically. Single source of truth.
+ * generates corresponding utility classes automatically. Single source
+ * of truth.
+ *
+ * The M1-M4 light-mode palette has been retired. We do NOT ship a
+ * light/dark toggle for the hackathon — every page is dark.
  */
 @theme {
+  --color-payphone-bg: #0a0a0a;
+  --color-payphone-surface: #141414;
+  --color-payphone-surface-elevated: #1f1f22;
   --color-payphone-blue: #0052ff;
-  --color-payphone-bg: #fafafa;
-  --color-payphone-surface: #ffffff;
-  --color-payphone-ink: #0a0a0a;
-  --color-payphone-muted: #71717a;
+  --color-payphone-orange: #ff6b35;
+  --color-payphone-ink: #fafafa;
+  --color-payphone-ink-muted: #a1a1aa;
+  --color-payphone-border: #27272a;
   --color-payphone-success: #10b981;
-  --color-payphone-border: #e4e4e7;
+
+  /* Backwards-compat alias: M1-M4 used `payphone-muted` for secondary text.
+   * The new canonical name is `payphone-ink-muted` but we keep both pointing
+   * at the same value so M4 components keep rendering during the M4.5
+   * redesign. Phase 6/8 redesigns will switch them over. */
+  --color-payphone-muted: #a1a1aa;
+
+  /* Aurora animation token — consumed by components/ui/aurora-background.tsx
+   * via the `after:animate-aurora` utility. Tailwind v4 generates the
+   * `animate-aurora` class from the `--animate-*` token. The keyframes
+   * themselves are defined below outside `@theme` (Tailwind v4 doesn't
+   * auto-link tokens to keyframes; the keyframes block must exist
+   * separately in CSS). */
+  --animate-aurora: aurora 60s linear infinite;
 }
 
-/* Background tokens used by the scaffold's default layout. Kept light-only
- * (no dark mode for the hackathon, per CONTEXT.md "Light mode primary"). */
+@keyframes aurora {
+  from {
+    background-position:
+      50% 50%,
+      50% 50%;
+  }
+  to {
+    background-position:
+      350% 50%,
+      350% 50%;
+  }
+}
 
 @theme inline {
   --color-background: var(--background);
@@ -75,34 +107,40 @@
  */
 
 /*
- * shadcn/ui semantic tokens.
+ * shadcn/ui semantic tokens — dark theme only (M4.5).
  *
- * The named PayPhone tokens (`--color-payphone-*`) above are the canonical
+ * The M1-M4 build had a `:root` block (light mode) AND a `.dark { }`
+ * override block (unused, but kept by shadcn's scaffold). M4.5 collapses
+ * both into a single dark theme on `:root`; the `.dark` override block is
+ * removed because there is no light mode to override TO.
+ *
+ * The PayPhone tokens above (`--color-payphone-*`) are the canonical
  * source of truth. Below we wire shadcn's semantic names (`--primary`,
  * `--background`, etc.) to those PayPhone tokens, so:
  *   - `bg-payphone-blue` (Tailwind utility) and shadcn primary buttons
  *     both render the same brand blue.
  *   - Touch up only the PayPhone tokens above to rebrand globally.
  *
- * Anything not listed here (chart-N, sidebar-*, popover, etc.) keeps the
- * shadcn Nova defaults — those surfaces aren't used in the M4 UI.
+ * The `dark` class is also applied to `<html>` in `app/layout.tsx` so
+ * Tailwind `dark:` variants in Aceternity components (which we don't
+ * own and don't want to fork) fire correctly.
  */
 :root {
   --background: var(--color-payphone-bg);
   --foreground: var(--color-payphone-ink);
   --card: var(--color-payphone-surface);
   --card-foreground: var(--color-payphone-ink);
-  --popover: var(--color-payphone-surface);
+  --popover: var(--color-payphone-surface-elevated);
   --popover-foreground: var(--color-payphone-ink);
   --primary: var(--color-payphone-blue);
-  --primary-foreground: var(--color-payphone-surface);
-  --secondary: oklch(0.97 0 0);
+  --primary-foreground: var(--color-payphone-ink);
+  --secondary: var(--color-payphone-surface-elevated);
   --secondary-foreground: var(--color-payphone-ink);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: var(--color-payphone-muted);
-  --accent: oklch(0.97 0 0);
+  --muted: var(--color-payphone-surface-elevated);
+  --muted-foreground: var(--color-payphone-ink-muted);
+  --accent: var(--color-payphone-orange);
   --accent-foreground: var(--color-payphone-ink);
-  --destructive: oklch(0.577 0.245 27.325);
+  --destructive: oklch(0.704 0.191 22.216);
   --border: var(--color-payphone-border);
   --input: var(--color-payphone-border);
   --ring: var(--color-payphone-blue);
@@ -112,51 +150,14 @@
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
-
-/*---break---
- */
-
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar: var(--color-payphone-surface);
+  --sidebar-foreground: var(--color-payphone-ink);
+  --sidebar-primary: var(--color-payphone-blue);
+  --sidebar-primary-foreground: var(--color-payphone-ink);
+  --sidebar-accent: var(--color-payphone-surface-elevated);
+  --sidebar-accent-foreground: var(--color-payphone-ink);
+  --sidebar-border: var(--color-payphone-border);
+  --sidebar-ring: var(--color-payphone-blue);
 }
 
 /*---break---
