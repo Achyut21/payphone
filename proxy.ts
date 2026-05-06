@@ -3,15 +3,15 @@
  *
  * Renamed from `middleware.ts` per the Next 16 deprecation: the file
  * convention moved to `proxy.ts` and the exported function from
- * `middleware()` to `proxy()`. Matcher config is unchanged.
+ * `middleware()` to `proxy()`. Matcher config is the actual policy.
  *
- * Single-source-of-truth route guard for protected pages. Runs at the
- * Edge (no Node APIs used) so the cookie check is fast and doesn't pull
- * `lib/auth.ts` (which uses `next/headers` + `server-only`).
+ * M4.5 routing — public vs protected:
+ *   - PUBLIC:    `/` (marketing landing), `/login`, `/docs`, `/api/*`
+ *   - PROTECTED: `/marketplace` (logged-in expert browse),
+ *                `/session/:path*` (call + recap)
  *
- * Protected matcher: `/` (marketplace) and `/session/*` (live + recap).
- * Everything else (`/login`, `/api/*`, static assets) is excluded by the
- * matcher config below — Next won't even invoke this for those paths.
+ * The marketplace's path moved from `/` to `/marketplace` in M4.5 so the
+ * root URL can host the marketing landing for unauthenticated visitors.
  *
  * We don't validate the cookie value against the seed list here; we just
  * check it's non-empty. If a tampered/stale id slips through, the
@@ -35,13 +35,11 @@ export function proxy(request: NextRequest): NextResponse {
 }
 
 /**
- * Matcher: protect `/` and any `/session/...` path.
- *
- * The negative lookahead in the docs' "match everything except API+static"
- * default would be overkill here — we only have two protected route
- * groups. Listing them explicitly is clearer and avoids accidental
- * scope creep into `/api/*`.
+ * Matcher: protect `/marketplace` and any `/session/...` path. Listing
+ * them explicitly (vs. a "match everything except API+static" negative
+ * lookahead) is clearer at our scale and keeps `/`, `/login`, `/docs`,
+ * `/api/*`, and static assets out of the proxy entirely.
  */
 export const config = {
-  matcher: ['/', '/session/:path*'],
+  matcher: ['/marketplace', '/session/:path*'],
 };

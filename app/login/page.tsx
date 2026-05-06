@@ -35,7 +35,10 @@ async function loginAction(formData: FormData): Promise<void> {
     throw new Error('login: missing userId');
   }
   await setCurrentUser(userId);
-  redirect('/');
+  // Redirect target moved from `/` to `/marketplace` in M4.5: the root URL
+  // is now the public marketing landing, the marketplace is the post-login
+  // home for authenticated users.
+  redirect('/marketplace');
 }
 
 export default function LoginPage() {

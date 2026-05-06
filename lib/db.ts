@@ -154,6 +154,43 @@ export async function getSessionByRoomId(roomId: string): Promise<SessionRow | n
 }
 
 /**
+ * Most recent COMPLETED session, used by the marketing landing's "live
+ * last-call" widget (M4.5 Phase 3). Scans the table, filters to status =
+ * COMPLETED, sorts client-side by `ended_at` desc, returns the top one.
+ *
+ * DDB has no native ORDER BY in Scan — you sort on the read side. At
+ * hackathon scale the table holds <100 rows so a full Scan fits in a
+ * single 1MB page; M5 polish if it ever matters: add a GSI keyed on
+ * `status` with `ended_at` as the sort key.
+ *
+ * Returns `null` on empty / all-pre-M3 tables. The landing falls back to
+ * static demo copy in that case (the M4 canonical tx) — never blocks
+ * page render.
+ *
+ * Caller-side caching: pages that consume this should set
+ * `export const revalidate = 30` (or similar) so we Scan at most every
+ * 30s, not on every visitor.
+ */
+export async function getLatestCompletedSession(): Promise<SessionRow | null> {
+  const tableName = process.env.DYNAMODB_TABLE_NAME!;
+  const result = await getDoc().send(
+    new ScanCommand({
+      TableName: tableName,
+      FilterExpression: '#status = :completed',
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: { ':completed': 'COMPLETED' satisfies SessionStatus },
+    }),
+  );
+  const items = (result.Items ?? []) as SessionRow[];
+  if (items.length === 0) return null;
+  // Sort newest-first by `ended_at` (set in markSessionCompleted). Rows
+  // without `ended_at` are treated as oldest — they shouldn't exist for
+  // status=COMPLETED but the guard is free.
+  items.sort((a, b) => (b.ended_at ?? 0) - (a.ended_at ?? 0));
+  return items[0] ?? null;
+}
+
+/**
  * Mark a session as COMPLETED with the on-chain settle results. Conditional
  * on `status = AUTHORIZED` — this is the double-settle guard. If Daily
  * retries the webhook (e.g., our 200 response was lost), the second update
