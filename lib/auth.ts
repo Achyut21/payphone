@@ -18,9 +18,8 @@
 import 'server-only';
 import { cookies } from 'next/headers';
 
-import { DEMO_USERS, findUserById, type DemoUser } from '@/lib/seed';
+import { AUTH_COOKIE_NAME, DEMO_USERS, findUserById, type DemoUser } from '@/lib/seed';
 
-const COOKIE_NAME = 'payphone_user';
 /** ~30 days. The cookie is non-sensitive so a long TTL is fine. */
 const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 
@@ -33,7 +32,7 @@ const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
  */
 export async function getCurrentUser(): Promise<DemoUser | null> {
   const cookieStore = await cookies();
-  const rawId = cookieStore.get(COOKIE_NAME)?.value;
+  const rawId = cookieStore.get(AUTH_COOKIE_NAME)?.value;
   return findUserById(rawId);
 }
 
@@ -48,7 +47,7 @@ export async function setCurrentUser(userId: string): Promise<void> {
     throw new Error(`Unknown user id: ${userId}`);
   }
   const cookieStore = await cookies();
-  cookieStore.set(COOKIE_NAME, user.id, {
+  cookieStore.set(AUTH_COOKIE_NAME, user.id, {
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.NODE_ENV === 'production',
@@ -60,7 +59,7 @@ export async function setCurrentUser(userId: string): Promise<void> {
 /** Clear the auth cookie. */
 export async function clearCurrentUser(): Promise<void> {
   const cookieStore = await cookies();
-  cookieStore.delete(COOKIE_NAME);
+  cookieStore.delete(AUTH_COOKIE_NAME);
 }
 
 /** Re-export for convenience so callers don't need both lib/auth and lib/seed. */

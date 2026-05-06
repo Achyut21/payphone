@@ -93,3 +93,10 @@ export function findExpertById(id: string | undefined): DemoExpert | null {
   if (!id) return null;
   return DEMO_EXPERTS.find((e) => e.id === id) ?? null;
 }
+
+/**
+ * Auth cookie name. Defined here (not in `lib/auth.ts`) so that Edge-runtime
+ * code paths like Next middleware can read it without pulling in the
+ * `server-only` `next/headers` API used by the auth helpers.
+ */
+export const AUTH_COOKIE_NAME = 'payphone_user';
