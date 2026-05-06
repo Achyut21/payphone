@@ -86,7 +86,7 @@ export function ExpertCard({ expert }: { expert: DemoExpert }): React.ReactEleme
         </Badge>
       </CardHeader>
 
-      <CardContent>
+      <CardContent className="flex-1">
         <p className="text-sm leading-relaxed text-payphone-ink-muted">{expert.bio}</p>
       </CardContent>
 

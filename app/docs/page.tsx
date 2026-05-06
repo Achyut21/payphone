@@ -151,7 +151,7 @@ export default function DocsPage() {
       style={{
         backgroundColor: 'var(--color-payphone-bg)',
         backgroundImage:
-          'radial-gradient(circle at center, color-mix(in srgb, var(--color-payphone-border) 70%, transparent) 1px, transparent 1px)',
+          'radial-gradient(circle at center, color-mix(in srgb, var(--color-payphone-ink-muted) 25%, transparent) 1.5px, transparent 1.5px)',
         backgroundSize: '24px 24px',
       }}
     >
@@ -646,7 +646,7 @@ function OpenSourceFooter() {
             href="https://github.com/Achyut21/payphone"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center justify-center gap-2 rounded-full bg-payphone-blue px-5 py-2.5 text-sm font-semibold text-payphone-ink shadow-md shadow-payphone-blue/20 transition-all hover:bg-payphone-blue/90 hover:shadow-lg hover:shadow-payphone-blue/30 md:text-base"
+            className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full bg-payphone-blue px-5 py-2.5 text-sm font-semibold text-payphone-ink shadow-md shadow-payphone-blue/20 transition-all hover:bg-payphone-blue/90 hover:shadow-lg hover:shadow-payphone-blue/30 md:text-base"
           >
             <Code2 className="h-4 w-4" aria-hidden="true" />
             View repo
@@ -654,7 +654,7 @@ function OpenSourceFooter() {
           </a>
           <Link
             href="/login"
-            className="inline-flex items-center justify-center gap-2 rounded-full border border-payphone-border bg-payphone-surface px-5 py-2.5 text-sm font-medium text-payphone-ink transition-colors hover:border-payphone-orange/50 hover:bg-payphone-surface-elevated md:text-base"
+            className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full border border-payphone-border bg-payphone-surface px-5 py-2.5 text-sm font-medium text-payphone-ink transition-colors hover:border-payphone-orange/50 hover:bg-payphone-surface-elevated md:text-base"
           >
             <TerminalSquare className="h-4 w-4 text-payphone-orange" aria-hidden="true" />
             Try the demo
