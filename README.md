@@ -23,8 +23,8 @@ The pitch in three lines:
 | **M1**    | x402 round-trip on Base **Sepolia**, exact scheme    | ✅ done (May 6)   |
 | **M2**    | Swap `exact` → `upto` (Permit2 witness) on Sepolia   | ✅ done (May 6)   |
 | **M3**    | Daily.co video rooms + DDB + duration-derived settle | ✅ done (May 6)   |
-| M4        | Marketplace UI + session page + recap page           | next              |
-| M5        | Mainnet flip + on-stage live demo                    | pending           |
+| **M4**    | Marketplace UI + live session + AI recap & chat      | ✅ done (May 6)   |
+| M5        | Mainnet flip + on-stage live demo                    | next              |
 
 ### M1 proof
 
@@ -87,43 +87,101 @@ automatically.**
      to the CDP facilitator → DDB row flips to `COMPLETED` via UpdateItem with
      conditional `status = AUTHORIZED` (the double-settle guard).
 
+### M4 proof
+
+PayPhone has a face: **a logged-in user browsed a marketplace, clicked an
+expert, joined a live video room with a billing ticker counting up at $0.01/sec,
+talked, hung up, and landed on a recap page with a streamed AI summary and a
+follow-up chat — both grounded in the actual call transcript.**
+
+- **Canonical session:** `c0a5c8df-abe5-4c88-97e3-72c606069b4f`
+- **Tx:** `0x47dab9fe331741037730c4da1e1c1d46f2cfd5309db4311b3d57745739d6e33a`
+- **BaseScan:** <https://sepolia.basescan.org/tx/0x47dab9fe331741037730c4da1e1c1d46f2cfd5309db4311b3d57745739d6e33a>
+- **duration_sec:** 84.84 (Daily-reported) — **settled $0.84 USDC**
+- **Transcript:** 61 lines captured to DDB during the call via Daily/Deepgram
+  realtime transcription
+- **Recap:** Claude Haiku 4.5 streamed a markdown summary (Topic / Key points /
+  Action items / Open questions) and answered follow-up questions grounded in
+  the transcript via a chat box
+- **What's new vs M3:** the buyer is no longer a CLI script. A real browser-
+  based flow runs the whole loop: cookie auth → marketplace → server action
+  triggers the M3 x402 round-trip → live session page with iframe + ticker →
+  realtime transcription captured client-side and POSTed to the server → recap
+  page streams the LLM summary as soon as the call settles
+- **End-to-end flow (browser):**
+  1. `GET /` → edge `proxy.ts` checks cookie → if missing, 302 to `/login`
+  2. `/login` server-action sets the cookie, redirects to `/` with the seeded
+     four-expert marketplace
+  3. Click "Talk to ..." → `<form action={startSession}>` runs the server
+     action, which calls `lib/agent.ts` → `POST /api/sessions` → x402 verify
+     against $5.00 max → Daily room created → DDB row written → redirect to
+     `/session/[id]`
+  4. Live session page server-side mints a meeting token with
+     `permissions.canAdmin: ['transcription']`, hands it to `<SessionRoom>`
+     which embeds the Daily iframe and starts realtime transcription. Client
+     filters `transcription-message` events to local participant only (Daily
+     broadcasts to all tabs; without the filter we get 2× duplicates) and
+     POSTs each line to `/api/sessions/[id]/transcript`
+  5. User clicks **Leave call** → ticker freezes at the displayed value →
+     Daily's `meeting.ended` webhook → M3 settle path runs unchanged
+  6. Status polling sees `COMPLETED` → `router.push('/recap')` → recap page
+     streams the AI summary via `summarize()` → useChat-driven chat box
+     answers follow-ups via `chatWithContext()`, both pinning the transcript
+     as system context
+
 ## Stack
 
 - **Next.js 16** App Router, **TypeScript** strict
 - **CDP Server Wallets v2** ("Agentic Wallets") + **CDP x402 Facilitator**
 - **`@x402/core`, `@x402/evm`, `@x402/fetch`** (x402 protocol v2)
 - **viem** for on-chain reads
-- **Daily.co** for video rooms
+- **Daily.co** for video rooms + realtime transcription (Deepgram nova-2)
 - **AWS DynamoDB** for session state (Terraform-managed)
 - **AWS Amplify Hosting** for production deploy (M5)
-- **Tailwind v4** + **shadcn/ui** + **Lucide React** (M4+)
-- **Anthropic Claude Haiku 4.5** for post-call recap (M4+)
+- **Tailwind v4** + **shadcn/ui** + **Lucide React** for the marketplace + session + recap UI
+- **Anthropic Claude Haiku 4.5** via **Vercel AI SDK v6** for the streaming recap + follow-up chat
+- **markdown-it** for rendering the recap (the React-Markdown / marked ESM-only chain doesn't compose with Next 16's CJS pipeline)
 - **pnpm**
 
 ## Architecture
 
 ```
-                                ┌──────────────────┐
-                                │  buyer-agent.ts  │
-                                │  (CDP wallet)    │
-                                └────────┬─────────┘
-                                         │ POST /api/sessions
-                                         │ (PAYMENT-SIGNATURE)
-                                         ▼
-        ┌─────────────────────────────────────────────────────────┐
-        │              Next.js (Node runtime)                     │
-        │                                                         │
-        │  /api/sessions ──┬─► verify (CDP facilitator)           │
-        │                  ├─► createRoom (Daily.co REST)         │
-        │                  ├─► createSession (DynamoDB)           │
-        │                  └─► return { sessionId, roomUrl }      │
-        │                                                         │
-        │  /api/webhooks/daily ◄── meeting.ended (HMAC-signed)    │
-        │                  ├─► verifyWebhookSignature             │
-        │                  ├─► getSessionByRoomId (DynamoDB)      │
-        │                  ├─► settleWithRetry (CDP facilitator)  │
-        │                  └─► markSessionCompleted (DynamoDB)    │
-        └─────────────────────────────────────────────────────────┘
+   ┌──────────────────┐         ┌──────────────────┐
+   │  buyer-agent.ts  │         │   Browser (M4)   │
+   │  (CDP wallet)    │         │  proxy.ts → /    │
+   └────────┬─────────┘         │  marketplace →   │
+            │                   │  startSession    │
+            │                   │  (server action) │
+            │                   └────────┬─────────┘
+            │   POST /api/sessions       │
+            │   (PAYMENT-SIGNATURE)      │
+            ▼                            ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │              Next.js (Node runtime)                     │
+   │                                                         │
+   │  /api/sessions ───────┬─► verify (CDP facilitator)      │
+   │                       ├─► createRoom (Daily.co REST)    │
+   │                       ├─► createSession (DynamoDB)      │
+   │                       └─► return { sessionId, roomUrl } │
+   │                                                         │
+   │  /session/[id]  (M4)  ─► createMeetingToken (Daily)     │
+   │                       └─► <SessionRoom> iframe + ticker │
+   │                                                         │
+   │  /api/sessions/[id]/transcript (M4)                     │
+   │                       └─► appendTranscript (DDB)        │
+   │                                                         │
+   │  /api/webhooks/daily ◄── meeting.ended (HMAC-signed)    │
+   │                       ├─► verifyWebhookSignature        │
+   │                       ├─► getSessionByRoomId (DDB)      │
+   │                       ├─► settleWithRetry (CDP)         │
+   │                       └─► markSessionCompleted (DDB)    │
+   │                                                         │
+   │  /session/[id]/recap (M4)                               │
+   │                       └─► <Recap> with streamed         │
+   │                           summary + follow-up chat      │
+   │  /api/sessions/[id]/recap (M4) ─► Haiku streamText      │
+   │  /api/sessions/[id]/chat  (M4) ─► Haiku streamText      │
+   └─────────────────────────────────────────────────────────┘
                                          │
                                          ▼
                               Base Sepolia (M1–M4) /
@@ -236,37 +294,104 @@ Daily fires `meeting.ended` to your webhook, which settles on-chain.
 ```bash
 pnpm tsx scripts/inspect-session.ts <sessionId>           # printed by buyer-agent
 # → prints DDB state including BaseScan URL for the settle tx.
+# Add --transcript to also dump the captured lines.
 ```
+
+### M4: full browser flow (marketplace → live call → recap + chat)
+
+Same three-terminal setup as M3 (dev server + ngrok + Daily webhook registered).
+The buyer is no longer the CLI — the whole loop runs in the browser.
+
+```bash
+# Make sure ANTHROPIC_API_KEY is in .env.local (M4 needs it for the recap LLM).
+# All M3 setup (DDB, Daily webhook, ngrok) carries over unchanged.
+
+pnpm tsx scripts/fund-check.ts --top-up --target=5.5      # ensure ≥ $5
+pnpm dev                                                  # Terminal 1
+ngrok http --url=<your-ngrok-domain>.ngrok-free.dev 3000  # Terminal 2
+```
+
+Then open <http://localhost:3000/> in your browser:
+
+1. **Login** — pick one of the four seeded users (Alice / Bob / Charlie / Diana).
+   Cookie auth, no password (the seeded users aren't a security boundary —
+   they're a demo aid).
+2. **Marketplace** — four seeded experts (Solidity, Rust, UX, DevOps). Click
+   **Talk to ...** on any card.
+3. **Live session** — Daily iframe loads, ticker counts up at $0.01/sec in
+   payphone-blue. Open the same `/session/<id>` URL in a second tab/browser
+   to act as the expert. Talk for ~30–60 seconds. The transcript is captured
+   in real time and POSTed to the server.
+4. Click **Leave call** in the side panel — the ticker freezes immediately at
+   the displayed value (which is what the on-chain settle will use).
+5. **Auto-redirect to recap** — within ~5–15s the webhook fires, settle
+   completes, and the page navigates to `/session/<id>/recap`. The Haiku
+   summary streams in (Topic / Key points / Action items / Open questions),
+   followed by a chat box where you can ask follow-up questions about the
+   call (every answer is grounded in the captured transcript).
+6. **BaseScan link** in the recap header takes you to the on-chain settle.
+
+Inspect any session you've created from the browser:
+
+```bash
+pnpm tsx scripts/inspect-session.ts <sessionId> --transcript
+```
+
+`<sessionId>` shows in the URL bar of `/session/<id>` and `/session/<id>/recap`.
 
 ## Diagnostics
 
 Living under `scripts/`:
 
-| Script                      | What it does                                                              |
-| --------------------------- | ------------------------------------------------------------------------- |
-| `wallet-setup.ts`           | Resolves the buyer CDP wallet (idempotent)                                |
-| `fund-check.ts`             | Reads buyer Sepolia USDC + ETH balance; `--top-up --target=N` faucet loop |
-| `buyer-agent.ts`            | Drives the x402 round-trip end-to-end, prints `roomUrl` for M3            |
-| `register-daily-webhook.ts` | Idempotent register/replace of the Daily `meeting.ended` webhook          |
-| `inspect-session.ts`        | Reads a DDB session row by id; prints BaseScan URL when settled           |
-| `probe-supported.ts`        | Lists the (scheme, network) pairs the CDP facilitator advertises          |
-| `probe-usdc.ts`             | Reads `name`/`version`/`DOMAIN_SEPARATOR` etc. from USDC on-chain         |
-| `verify-tx.ts`              | Inspects a tx receipt + decodes USDC `Transfer` events                    |
+| Script                      | What it does                                                                                                         |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `wallet-setup.ts`           | Resolves the buyer CDP wallet (idempotent)                                                                           |
+| `fund-check.ts`             | Reads buyer Sepolia USDC + ETH balance; `--top-up --target=N` faucet loop                                            |
+| `buyer-agent.ts`            | Drives the x402 round-trip end-to-end, prints `roomUrl` for M3                                                       |
+| `register-daily-webhook.ts` | Idempotent register/replace of the Daily `meeting.ended` webhook                                                     |
+| `inspect-session.ts`        | Reads a DDB session row by id; prints BaseScan URL when settled; `--transcript`/`-t` dumps captured transcript lines |
+| `probe-supported.ts`        | Lists the (scheme, network) pairs the CDP facilitator advertises                                                     |
+| `probe-usdc.ts`             | Reads `name`/`version`/`DOMAIN_SEPARATOR` etc. from USDC on-chain                                                    |
+| `verify-tx.ts`              | Inspects a tx receipt + decodes USDC `Transfer` events                                                               |
 
 ## Layout
 
 ```
 app/
-  api/sessions/route.ts          x402-protected session creation: verify, createRoom, persist
-  api/webhooks/daily/route.ts    Daily meeting.ended handler: HMAC, settle, mark COMPLETED
-infra/terraform/                 AWS infra-as-code (DDB table + scoped runtime IAM)
+  page.tsx                            (M4) marketplace landing for logged-in users
+  layout.tsx                          root layout, metadata, fonts
+  globals.css                         Tailwind v4 @theme + payphone tokens + typography plugin
+  login/page.tsx                      (M4) seeded-user login (server action)
+  _actions/session.ts                 (M4) startSession server action — kicks off /api/sessions
+  session/[id]/page.tsx               (M4) live session page (mints meeting token, renders SessionRoom)
+  session/[id]/recap/page.tsx         (M4) post-call recap page (fetches DDB row, renders Recap)
+  api/sessions/route.ts               x402-protected session creation: verify, createRoom, persist
+  api/sessions/[id]/status/route.ts   (M4) GET — current status, used by client polling
+  api/sessions/[id]/transcript/route.ts (M4) POST — append a transcript line to DDB
+  api/sessions/[id]/recap/route.ts    (M4) GET — streams Haiku-generated markdown summary
+  api/sessions/[id]/chat/route.ts     (M4) POST — streams Haiku follow-up chat answers
+  api/webhooks/daily/route.ts         Daily meeting.ended handler: HMAC, settle, mark COMPLETED
+proxy.ts                              (M4) Next 16 edge proxy — cookie auth gate for /, /session/*
+components/
+  ExpertCard.tsx                      (M4) marketplace card with avatar + Lucide icon + "Talk to" form
+  SessionRoom.tsx                     (M4) Daily iframe + ticker + transcription + status polling
+  Ticker.tsx                          (M4) live $X.XX billing ticker, freezes on call end
+  Recap.tsx                           (M4) recap UI with streamed summary + useChat follow-up
+  ui/                                 shadcn primitives (button, card, input, avatar, badge, …)
+infra/terraform/                      AWS infra-as-code (DDB table + scoped runtime IAM)
 lib/
-  constants.ts                   ALL chain/contract constants in ONE place
-  cdp.ts                         CDP client singleton + buyer/seller account accessors
-  x402.ts                        facilitator client + retry-with-backoff settle
-  daily.ts                       Daily REST + webhook HMAC verification
-  db.ts                          DynamoDB doc client + session CRUD
-scripts/                         diagnostic + admin scripts (see table above)
+  constants.ts                        ALL chain/contract constants in ONE place
+  cdp.ts                              CDP client singleton + buyer/seller account accessors
+  x402.ts                             facilitator client + retry-with-backoff settle
+  daily.ts                            Daily REST + webhook HMAC + (M4) meeting tokens
+  db.ts                               DynamoDB doc client + session CRUD + (M4) appendTranscript
+  agent.ts                            (M4) `requestSession` — shared by CLI + server action
+  auth.ts                             (M4) cookie helpers (getCurrentUser / setCurrentUser)
+  seed.ts                             (M4) demo users + experts
+  avatar.ts                           (M4) DiceBear hosted-CDN avatar URLs
+  haiku.ts                            (M4) Anthropic Haiku via Vercel AI SDK — summarize + chat
+  utils.ts                            (M4) shadcn `cn` helper
+scripts/                              diagnostic + admin scripts (see table above)
 ```
 
 ## Scripts
