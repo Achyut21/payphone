@@ -1,137 +1,71 @@
 /**
- * PayPhone — M3 buyer agent.
+ * PayPhone — buyer agent CLI (diagnostic).
  *
- * Drives the x402 round-trip with the `upto` scheme, the same way M2 did,
- * but expects an M3-shape response: HTTP 200 with `{ sessionId, roomUrl,
- * maxAuthorized }` and NO settlement yet. Settlement now happens later
- * when the meeting ends and the Daily.co webhook fires.
+ * Thin wrapper around `lib/agent.ts.requestSession`. The core x402 flow
+ * lives in the lib module so server actions and this CLI share one
+ * implementation. The CLI exists for two reasons:
  *
- *   1. Resolves the CDP-managed buyer wallet (idempotent — same address as
- *      the wallet from M0: 0xE01669A01E28E905055Ac6cD33c19ced7e10d870).
- *   2. Wraps it as an x402 ClientEvmSigner.
- *   3. POSTs to http://localhost:3000/api/sessions via @x402/fetch's
- *      `wrapFetchWithPayment`, which:
- *        a. sees the server's HTTP 402 + PaymentRequirements (scheme=upto,
- *           amount = MAX $5, extensions: eip2612GasSponsoring +
- *           erc20ApprovalGasSponsoring),
- *        b. asks UptoEvmScheme to build a Permit2 witness payload signed
- *           over `permitted.amount = $5`,
- *        c. if Permit2 has zero allowance from this wallet AND the server
- *           declared eip2612GasSponsoring, the scheme additionally signs
- *           a USDC EIP-2612 permit so the facilitator can perform the
- *           one-time approve gaslessly,
- *        d. encodes everything as PAYMENT-SIGNATURE and retries the request.
- *   4. Server creates the Daily room + DDB row (status=AUTHORIZED) and
- *      returns the room URL. The buyer agent prints it prominently and
- *      exits — joining the room and ending the call is a manual step
- *      until M4.
+ *   1. Diagnostic: when something breaks in M3+ end-to-end, `pnpm tsx
+ *      scripts/buyer-agent.ts` lets you exercise the buyer side without
+ *      touching the UI. Errors surface plainly on stderr instead of the
+ *      Next error overlay's stack-trace truncation.
+ *   2. M3 carry-over: the original M3 acceptance flow (two-tab manual
+ *      test) still works exactly as before — useful for re-validating
+ *      backend changes without the M4 UI in the way.
  *
- * Run with:  pnpm tsx scripts/buyer-agent.ts
+ * Usage:
+ *   pnpm tsx scripts/buyer-agent.ts              # uses defaults below
+ *   pnpm tsx scripts/buyer-agent.ts <userId>     # override user
+ *   pnpm tsx scripts/buyer-agent.ts <userId> <expertId> [topic]
  *
- * Flip `SERVER_URL` env var to hit a different host. Defaults to localhost.
+ * Defaults match real seeded ids so the resulting DDB row is consistent
+ * with what the M4 UI would produce.
  */
 
 import dotenv from 'dotenv';
 // .env.local must be loaded before any function below reads CDP env vars.
-// (The imports themselves are side-effect-free re: env, so import-hoisting is
-// not a problem here — env is only read inside function bodies at call time.)
+// Imports are side-effect-free re: env (lib reads env inside function bodies).
 dotenv.config({ path: '.env.local' });
 
-import { wrapFetchWithPayment, x402Client } from '@x402/fetch';
-import { UptoEvmScheme } from '@x402/evm/upto/client';
-import type { ClientEvmSigner } from '@x402/evm';
+import { requestSession } from '../lib/agent';
+import { ACTIVE_CAIP2, ACTIVE_NETWORK } from '../lib/constants';
 
-import { ACTIVE_CAIP2, ACTIVE_NETWORK, ACTIVE_PUBLIC_RPC_URL } from '../lib/constants';
-import { getBuyerAccount } from '../lib/cdp';
-
-const SERVER_URL = process.env.SERVER_URL ?? 'http://localhost:3000';
+const DEFAULT_USER_ID = 'alice';
+const DEFAULT_EXPERT_ID = 'expert-alice-chen';
+const DEFAULT_TOPIC = 'CLI diagnostic call';
 
 async function main(): Promise<void> {
-  console.log(`[buyer-agent] resolving CDP buyer wallet…`);
-  const buyer = await getBuyerAccount();
-  console.log(`[buyer-agent] wallet: ${buyer.address}`);
+  const userId = process.argv[2] ?? DEFAULT_USER_ID;
+  const expertId = process.argv[3] ?? DEFAULT_EXPERT_ID;
+  const topic = process.argv[4] ?? DEFAULT_TOPIC;
+
   console.log(`[buyer-agent] network: ${ACTIVE_NETWORK} (${ACTIVE_CAIP2})`);
+  console.log(`[buyer-agent] user=${userId} expert=${expertId}`);
+  console.log(`[buyer-agent] topic="${topic}"`);
+  console.log(`[buyer-agent] running x402 round-trip…`);
 
-  // Adapter: the buyer EvmAccount exposes a viem-compatible signTypedData; we
-  // retype it to ClientEvmSigner's wider parameter shape so the x402 scheme
-  // accepts it. CDP doesn't expose readContract / signTransaction directly,
-  // but UptoEvmScheme's `options.rpcUrl` lets it backfill those via viem.
-  const signer: ClientEvmSigner = {
-    address: buyer.address as `0x${string}`,
-    signTypedData: async (params) => {
-      // The x402 scheme assembles the EIP-712 typed data; CDP just signs it.
-      // Cast widens our generic shape to viem's stricter parameter type.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (await buyer.signTypedData(params as any)) as `0x${string}`;
-    },
-  };
-
-  // The upto scheme needs an RPC URL so its gas-sponsoring extensions can:
-  //   - read Permit2 allowance to decide if a permit/approval is needed
-  //   - read EIP-2612 nonce(owner) to build the permit
-  // If allowance is already sufficient (e.g. from a prior approval) the
-  // extensions short-circuit and no extra signing happens.
-  const client = new x402Client().register(
-    ACTIVE_CAIP2,
-    new UptoEvmScheme(signer, { rpcUrl: ACTIVE_PUBLIC_RPC_URL }),
-  );
-  const fetchWithPayment = wrapFetchWithPayment(globalThis.fetch, client);
-
-  const url = `${SERVER_URL}/api/sessions`;
-  console.log(`[buyer-agent] POST ${url}`);
-
-  const response = await fetchWithPayment(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ topic: 'M3 video session test' }),
-  });
-
-  const bodyText = await response.text();
-  if (!response.ok) {
-    console.error(`[buyer-agent] HTTP ${response.status}: ${bodyText}`);
-    process.exit(1);
-  }
-
-  let body: {
-    sessionId?: string;
-    roomUrl?: string;
-    maxAuthorized?: string;
-    payer?: string;
-    network?: string;
-    status?: string;
-  };
-  try {
-    body = JSON.parse(bodyText);
-  } catch {
-    console.error(`[buyer-agent] non-JSON success response: ${bodyText}`);
-    process.exit(1);
-  }
+  const result = await requestSession({ topic, userId, expertId });
 
   console.log(`[buyer-agent] HTTP 200 OK`);
-  console.log(`[buyer-agent]   sessionId:     ${body.sessionId}`);
-  console.log(`[buyer-agent]   maxAuthorized: $${body.maxAuthorized ?? '(unknown)'}`);
-  console.log(`[buyer-agent]   status:        ${body.status ?? '(unknown)'}`);
-  console.log(`[buyer-agent]   payer:         ${body.payer ?? '(unknown)'}`);
-  console.log(`[buyer-agent]   network:       ${body.network ?? '(unknown)'}`);
-
-  if (body.roomUrl) {
-    console.log('');
-    console.log('🎥 Open this URL in TWO browser tabs to test M3 settlement:');
-    console.log('');
-    console.log(`   ${body.roomUrl}`);
-    console.log('');
-    console.log('   Talk for ~30–60 seconds, then click "Leave" in either tab.');
-    console.log('   Daily will fire `meeting.ended` to /api/webhooks/daily,');
-    console.log('   which will compute duration × rate, settle on-chain, and');
-    console.log('   mark the DDB row COMPLETED.');
-    console.log('');
-    if (body.sessionId) {
-      console.log('🔍 After hangup, inspect the final state with:');
-      console.log('');
-      console.log(`   pnpm tsx scripts/inspect-session.ts ${body.sessionId}`);
-      console.log('');
-    }
-  }
+  console.log(`[buyer-agent]   sessionId:     ${result.sessionId}`);
+  console.log(`[buyer-agent]   maxAuthorized: $${result.maxAuthorized}`);
+  console.log(`[buyer-agent]   status:        ${result.status}`);
+  console.log(`[buyer-agent]   payer:         ${result.payer}`);
+  console.log(`[buyer-agent]   network:       ${result.network}`);
+  console.log('');
+  console.log('🎥 Open this URL in TWO browser tabs to test M3-style settlement:');
+  console.log('');
+  console.log(`   ${result.roomUrl}`);
+  console.log('');
+  console.log('   Talk for ~30–60 seconds, then click "Leave" in either tab.');
+  console.log('   Daily will fire `meeting.ended` to /api/webhooks/daily,');
+  console.log('   which will compute duration × rate, settle on-chain, and');
+  console.log('   mark the DDB row COMPLETED.');
+  console.log('');
+  console.log('🔍 After hangup, inspect the final state with:');
+  console.log('');
+  console.log(`   pnpm tsx scripts/inspect-session.ts ${result.sessionId}`);
+  console.log('');
 }
 
 main().catch((err: unknown) => {

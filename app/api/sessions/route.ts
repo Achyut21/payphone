@@ -36,6 +36,7 @@ import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader } from '@x402/core/http';
 import type { PaymentPayload, PaymentRequired, PaymentRequirements } from '@x402/core/types';
+import { z } from 'zod';
 
 import {
   ACTIVE_CAIP2,
@@ -56,6 +57,21 @@ export const runtime = 'nodejs';
 
 /** TTL for the DDB session row: 24h after creation. M5 stretch may shorten. */
 const SESSION_ROW_TTL_SECONDS = 24 * 60 * 60;
+
+/**
+ * Request body schema. All fields optional — the M3 CLI sent only `topic`,
+ * which the route ignored. M4 adds `userId`/`expertId` so the marketplace
+ * can persist who initiated the call and which expert was picked. We
+ * keep the M3 shape backward-compatible by falling back to sentinel
+ * values when fields are missing (so rerunning the M3 CLI still works
+ * for diagnostic purposes — the persisted row will just have
+ * `seed-buyer` / `seed-expert`).
+ */
+const SessionRequestBodySchema = z.object({
+  topic: z.string().optional(),
+  userId: z.string().min(1).optional(),
+  expertId: z.string().min(1).optional(),
+});
 
 /**
  * Build the PaymentRequirements for verify. The webhook reconstructs this
@@ -139,6 +155,25 @@ function encodePaymentPayloadForStorage(payload: PaymentPayload): string {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
+  // Read body up front. Buyer agent sends JSON `{ topic, userId, expertId }`.
+  // The x402 dance only reads the `PAYMENT-SIGNATURE` header — so consuming
+  // the body stream here doesn't conflict. Failures (empty body, malformed
+  // JSON) fall back to sentinel values for M3-CLI compatibility.
+  let parsedBody: z.infer<typeof SessionRequestBodySchema> = {};
+  try {
+    const bodyText = await request.text();
+    if (bodyText.length > 0) {
+      const parseResult = SessionRequestBodySchema.safeParse(JSON.parse(bodyText));
+      if (parseResult.success) {
+        parsedBody = parseResult.data;
+      }
+    }
+  } catch {
+    // Non-JSON or stream errors — fall through to sentinels below.
+  }
+  const persistedUserId = parsedBody.userId ?? 'seed-buyer';
+  const persistedExpertId = parsedBody.expertId ?? 'seed-expert';
+
   const sellerAddress = await getSellerAddress();
   const verifyRequirements = buildRequirements(sellerAddress, M2_UPTO_MAX_ATOMIC);
   const resourceUrl = new URL(request.url).toString();
@@ -197,9 +232,11 @@ export async function POST(request: Request): Promise<NextResponse> {
     ('0x0000000000000000000000000000000000000000' as `0x${string}`);
   const row: SessionRow = {
     session_id: sessionId,
-    // M3 has no real auth/marketplace yet (M4). Use sentinel ids until then.
-    user_id: 'seed-buyer',
-    expert_id: 'seed-expert',
+    // M4: real user/expert ids from the marketplace request body. M3-CLI
+    // calls (no body) fall through to the sentinels above, preserving
+    // the diagnostic flow.
+    user_id: persistedUserId,
+    expert_id: persistedExpertId,
     agent_wallet_addr: payer,
     payment_authorization_payload: encodePaymentPayloadForStorage(paymentPayload),
     video_room_id: room.name, // 'name' matches the webhook payload's `room` field

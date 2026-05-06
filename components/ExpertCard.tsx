@@ -1,10 +1,11 @@
 /**
  * PayPhone — expert marketplace card.
  *
- * Pure server component (no 'use client'). The avatar is an `<img>` to
+ * Pure server component (no 'use client'). Avatar is an `<img>` to
  * DiceBear's hosted API; rationale + trade-offs in `lib/avatar.ts`. The
- * action button is a Phase 2 placeholder — Phase 3 wires it to the
- * buyer-agent server action.
+ * "Talk to" button submits a form whose action is the server action
+ * `startSession`, which runs the x402 round-trip server-side and
+ * redirects to `/session/[id]`.
  *
  * Layout:
  *   ┌─ avatar ─┬─ name + specialty (icon)
@@ -15,6 +16,7 @@
 
 import { Code2, Cpu, Sparkles, Cog, type LucideIcon } from 'lucide-react';
 
+import { startSession } from '@/app/_actions/session';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -70,15 +72,19 @@ export function ExpertCard({ expert }: { expert: DemoExpert }): React.ReactEleme
       </CardContent>
 
       <CardFooter>
-        {/* Phase 2 placeholder: button does nothing. Phase 3 wraps this in a
-            <form action={startSessionAction}> and starts the x402 round-trip. */}
-        <Button
-          disabled
-          size="lg"
-          className="w-full bg-payphone-blue text-white hover:bg-payphone-blue/90"
-        >
-          Talk to {firstName}
-        </Button>
+        {/* Form-action server action: x402 round-trip happens server-side, then
+            redirects to /session/[id]. Browser shows a brief navigation pause
+            (~5-10s) while the buyer signs and the room is created. */}
+        <form action={startSession} className="w-full">
+          <input type="hidden" name="expertId" value={expert.id} />
+          <Button
+            type="submit"
+            size="lg"
+            className="w-full bg-payphone-blue text-white hover:bg-payphone-blue/90"
+          >
+            Talk to {firstName}
+          </Button>
+        </form>
       </CardFooter>
     </Card>
   );
