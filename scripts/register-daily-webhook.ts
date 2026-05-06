@@ -27,6 +27,18 @@ dotenv.config({ path: '.env.local' });
 
 import { deleteWebhook, listWebhooks, registerWebhook } from '../lib/daily';
 
+/**
+ * M4 reality check: Daily's webhook API doesn't expose realtime
+ * `transcription.message` events — those are CLIENT-SIDE events on the
+ * Daily JS SDK (`call.on('transcription-message', ...)`). The webhook
+ * surface only has lifecycle events (`meeting.*`, `participant.*`,
+ * `transcript.started`, `transcript.ready-to-download`, `transcript.error`).
+ *
+ * For PayPhone, realtime utterance capture happens in the browser
+ * (`components/SessionRoom.tsx`) and POSTs each line to
+ * `/api/sessions/[id]/transcript`. The webhook only needs `meeting.ended`
+ * for on-chain settle — same as M3.
+ */
 const EVENTS = ['meeting.ended'];
 
 async function main(): Promise<void> {

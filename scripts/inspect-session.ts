@@ -94,6 +94,22 @@ async function main(): Promise<void> {
       );
     }
   }
+
+  // M4: surface transcript summary. Full lines are only printed under
+  // --transcript / -t flag to keep the default output skim-friendly.
+  const transcript = session.transcript ?? [];
+  console.log('');
+  console.log(`  transcript: ${transcript.length} line(s)`);
+  const showFullTranscript = process.argv.includes('--transcript') || process.argv.includes('-t');
+  if (transcript.length > 0 && showFullTranscript) {
+    console.log('  --- transcript ---');
+    for (const line of transcript) {
+      console.log(`    ${line}`);
+    }
+    console.log('  --- end ---');
+  } else if (transcript.length > 0) {
+    console.log(`  (pass --transcript to print all ${transcript.length} lines)`);
+  }
 }
 
 main().catch((err: unknown) => {

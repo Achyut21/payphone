@@ -130,6 +130,10 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // Only meeting.ended drives settle. Other events (meeting.started,
   // participant.joined, test pings) get a 200 with no side-effects.
+  // Realtime transcription is captured CLIENT-SIDE in components/SessionRoom
+  // via the Daily JS SDK — Daily's webhook surface does not include
+  // per-utterance events, only `transcript.ready-to-download` (which fires
+  // post-meeting after storage is finalized; we don't use it).
   if (event.type !== 'meeting.ended') {
     console.log(`[webhooks/daily] ignoring event type=${event.type ?? 'unknown'}`);
     return NextResponse.json(

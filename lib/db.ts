@@ -94,7 +94,7 @@ export type SessionRow = {
   duration_sec?: number;
   settled_amount?: number;
   settle_tx_hash?: string;
-  transcript?: string;
+  transcript?: string[];
   summary?: string;
 };
 
@@ -188,6 +188,48 @@ export async function markSessionCompleted(
         ':hash': fields.settle_tx_hash,
         ':ended': fields.ended_at,
         ':duration': fields.duration_sec,
+      },
+    }),
+  );
+}
+
+/**
+ * Append one utterance to a session's `transcript` (M4). Daily fires a
+ * `transcription.message` event per utterance; we accumulate them into a
+ * DDB List of strings. Reads (`getSession().transcript`) come back as
+ * `string[]`; the recap LLM (Phase 6) joins on `\n` for the system
+ * context. Each line is conventionally `[hh:mm:ss] speaker: text` —
+ * formatted by the webhook before this helper is called.
+ *
+ * Why a List, not a String: DDB's `UpdateExpression` has `list_append`
+ * for lists but no native string-concat operator. The alternative
+ * (read-then-write) is race-prone under concurrent webhook deliveries.
+ * `list_append + if_not_exists` is atomic.
+ *
+ * Concurrency: DDB serializes UpdateItem against the same key, so two
+ * concurrent appends both land — order may not match wall-clock if
+ * Daily ever delivers out-of-order, but at human speech rates over a
+ * 2-participant call this is unmeasurable. M5 polish if it ever matters:
+ * a per-event sequence number on each line.
+ *
+ * Empty/whitespace deltas are dropped to keep the field tidy.
+ *
+ * Failure mode: best-effort. The route catches and logs append errors
+ * and returns 200 to Daily — the on-chain settle path (driven by
+ * `meeting.ended`) is unaffected.
+ */
+export async function appendTranscript(sessionId: string, line: string): Promise<void> {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return;
+  const tableName = process.env.DYNAMODB_TABLE_NAME!;
+  await getDoc().send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { session_id: sessionId },
+      UpdateExpression: 'SET transcript = list_append(if_not_exists(transcript, :empty), :delta)',
+      ExpressionAttributeValues: {
+        ':empty': [] as string[],
+        ':delta': [trimmed],
       },
     }),
   );

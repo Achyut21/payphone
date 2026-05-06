@@ -105,7 +105,12 @@ export type DailyRoom = {
  *   - `max_participants: 2`: buyer + expert only
  *   - `enable_prejoin_ui: false`: drop straight into the call (faster demo)
  *   - `enable_chat: false`: keep the focus on the call itself
- *   - NO recording, NO streaming, NO transcription (M4 will enable that)
+ *   - `enable_transcription: true` (M4): allow realtime transcription. The
+ *     client component starts it via `call.startTranscription()` after the
+ *     `joined-meeting` event — there's no room-property auto-start for
+ *     transcription per Daily's current API. The webhook receives
+ *     `transcription.message` events and appends to the session row.
+ *   - NO recording, NO streaming, NO telephony
  *
  * Returns the bits we persist to DDB: id, name, url. Daily generates the
  * room name automatically when we don't pass one — that's fine; we don't
@@ -121,6 +126,11 @@ export async function createRoom(): Promise<DailyRoom> {
       max_participants: 2,
       enable_prejoin_ui: false,
       enable_chat: false,
+      // M4: enable transcription. The client must still call
+      // `call.startTranscription()` after joining; this property just
+      // unlocks the capability on the room. The actual transcript flows
+      // to /api/webhooks/daily as `transcription.message` events.
+      enable_transcription: true,
       // Defensive: explicit nulls/false for the disabled features. Daily
       // defaults already exclude these for free-tier accounts, but pinning
       // them here makes the intent obvious in code review.
@@ -133,6 +143,45 @@ export async function createRoom(): Promise<DailyRoom> {
     body: JSON.stringify(body),
   })) as DailyRoomResponse;
   return { id: response.id, name: response.name, url: response.url };
+}
+
+/* --- Meeting tokens (M4: needed for transcription permission) --- */
+
+/**
+ * Create a Daily meeting token. Tokens scope the participant's
+ * permissions in a room. M4 needs this because `startTranscription()`
+ * requires `canAdmin: 'transcription'`, which is NOT granted by the
+ * default URL-only join — only by an owner-flagged or transcription-
+ * admin-scoped token. (Daily docs:
+ * https://docs.daily.co/guides/products/transcription)
+ *
+ * We mint these per page render (cheap REST call) rather than persisting
+ * — they're short-lived and scoped to one room, so a fresh token per
+ * load is simpler than a DDB schema migration.
+ */
+export async function createMeetingToken({
+  roomName,
+  expSec,
+  permissions,
+}: {
+  roomName: string;
+  /** Unix-seconds expiry. Defaults to room's natural exp window. */
+  expSec?: number;
+  /** Optional permissions object — typically `{ canAdmin: ['transcription'] }`. */
+  permissions?: { canAdmin?: string[] };
+}): Promise<string> {
+  const body = {
+    properties: {
+      room_name: roomName,
+      ...(typeof expSec === 'number' ? { exp: expSec } : {}),
+      ...(permissions ? { permissions } : {}),
+    },
+  };
+  const response = (await dailyFetch('/meeting-tokens', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })) as { token: string };
+  return response.token;
 }
 
 /* --- Webhook management (used by scripts/register-daily-webhook.ts) --- */
