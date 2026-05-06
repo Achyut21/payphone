@@ -21,6 +21,13 @@ export type DemoUser = {
   name: string;
   /** Seed for DiceBear avatar (deterministic per id). */
   avatarSeed: string;
+  /**
+   * Short persona tagline shown on the login picker (M4.5). Two facets
+   * separated by `·`, e.g. "Web3 founder · power user". Keeps the demo
+   * users feeling like distinct personas rather than interchangeable
+   * radio-button labels.
+   */
+  tagline: string;
 };
 
 export type DemoExpert = {
@@ -38,9 +45,19 @@ export type DemoExpert = {
 };
 
 export const DEMO_USERS: readonly DemoUser[] = [
-  { id: 'alice', name: 'Alice', avatarSeed: 'alice-payphone' },
-  { id: 'bob', name: 'Bob', avatarSeed: 'bob-payphone' },
-  { id: 'charlie', name: 'Charlie', avatarSeed: 'charlie-payphone' },
+  {
+    id: 'alice',
+    name: 'Alice',
+    avatarSeed: 'alice-payphone',
+    tagline: 'Web3 founder · power user',
+  },
+  { id: 'bob', name: 'Bob', avatarSeed: 'bob-payphone', tagline: 'Solidity dev · day-trader' },
+  {
+    id: 'charlie',
+    name: 'Charlie',
+    avatarSeed: 'charlie-payphone',
+    tagline: 'DAO maintainer · multi-tasker',
+  },
 ] as const;
 
 export const DEMO_EXPERTS: readonly DemoExpert[] = [
