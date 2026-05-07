@@ -9,6 +9,15 @@
 #   - The SSR runtime needs the .next/ output as the artifact root;
 #     Amplify wraps it with their Lambda@Edge handler automatically
 #     when it sees a Next.js app.
+#   - SSR runtime env-var forwarding: Amplify does NOT auto-expose
+#     console-set env vars to Next.js server components / API routes.
+#     We have to write them into .env.production at build time. The
+#     `env | grep -e ... >> .env.production` line below is what makes
+#     COGNITO_*, CDP_*, DAILY_*, NEXTAUTH_*, NEXT_PUBLIC_*, DYNAMODB_*,
+#     USERS_TABLE_NAME, APP_AWS_*, INTERNAL_API_URL, ANTHROPIC_API_KEY
+#     visible to process.env at runtime. Without this line, sign-in
+#     fails immediately with "Missing client_id" / DDB calls 500 with
+#     "missing region", etc.
 #
 # Tuning notes:
 #   - corepack pins pnpm to the exact local version (10.33.3) so the
@@ -34,6 +43,13 @@ frontend:
         - pnpm install --frozen-lockfile
     build:
       commands:
+        # Forward console-set env vars into .env.production so Next.js's
+        # server-side runtime (API routes, server actions, server
+        # components) can see them via process.env. The grep filter is a
+        # whitelist — any new prefix added to the runtime needs to be
+        # added here too.
+        - env | grep -E '^(COGNITO_|CDP_|DAILY_|NEXTAUTH_|NEXT_PUBLIC_|DYNAMODB_|USERS_TABLE_NAME|APP_AWS_|INTERNAL_API_URL|ANTHROPIC_API_KEY)' >> .env.production || true
+        - echo "[amplify] env wrote $(wc -l < .env.production) lines to .env.production"
         - pnpm build
   artifacts:
     baseDirectory: .next
