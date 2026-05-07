@@ -1,0 +1,45 @@
+# AWS Amplify Hosting build spec for PayPhone (M5 Phase 7).
+#
+# Why this file exists:
+#   - Amplify auto-detects Next.js but defaults to npm; we use pnpm
+#     (single committed lockfile is `pnpm-lock.yaml`).
+#   - Amplify's Node image moves over time — pinning Node 22 here
+#     keeps the build deterministic and safely above Next 16's
+#     Node 20.9+ floor.
+#   - The SSR runtime needs the .next/ output as the artifact root;
+#     Amplify wraps it with their Lambda@Edge handler automatically
+#     when it sees a Next.js app.
+#
+# Tuning notes:
+#   - corepack pins pnpm to the exact local version (10.33.3) so the
+#     lockfile resolves identically. If you bump pnpm locally, bump
+#     it here in lockstep.
+#   - The cache covers `node_modules` (pnpm install speedup on repeat
+#     builds) and `.next/cache` (Next's incremental build cache).
+#     Don't cache `.next/` itself — only `.next/cache/`.
+#   - `--frozen-lockfile` fails the build if `pnpm-lock.yaml` is out
+#     of date. Better than silent drift.
+
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - nvm install 22
+        - nvm use 22
+        - node -v
+        - corepack enable
+        - corepack prepare pnpm@10.33.3 --activate
+        - pnpm -v
+        - pnpm install --frozen-lockfile
+    build:
+      commands:
+        - pnpm build
+  artifacts:
+    baseDirectory: .next
+    files:
+      - '**/*'
+  cache:
+    paths:
+      - node_modules/**/*
+      - .next/cache/**/*
