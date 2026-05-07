@@ -224,7 +224,8 @@ export async function POST(request: Request): Promise<NextResponse> {
   // 3. Persist the session. status=AUTHORIZED — the webhook flips to
   //    COMPLETED on settle success (atomically, conditional on still
   //    being AUTHORIZED, which guards against double-settle on retries).
-  const startedAt = Math.floor(Date.now() / 1000);
+  const nowMs = Date.now();
+  const startedAt = Math.floor(nowMs / 1000);
   const payer =
     (verifyResponse.payer as `0x${string}` | undefined) ??
     ((paymentPayload.payload as { permit?: { permitted?: { owner?: string } } } | undefined)?.permit
@@ -242,6 +243,11 @@ export async function POST(request: Request): Promise<NextResponse> {
     video_room_id: room.name, // 'name' matches the webhook payload's `room` field
     video_room_url: room.url,
     started_at: startedAt,
+    // M4.9: ms-precision creation time for the 90s no-expert-joined
+    // timeout. The status route compares this against Date.now() to
+    // decide whether a still-AUTHORIZED session should transition to
+    // TIMEOUT.
+    started_at_ms: nowMs,
     max_authorized_amount: Number(M2_UPTO_MAX_ATOMIC),
     status: 'AUTHORIZED',
     expires_at: startedAt + SESSION_ROW_TTL_SECONDS,

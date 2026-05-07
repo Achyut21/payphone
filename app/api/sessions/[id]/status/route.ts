@@ -39,6 +39,10 @@ export async function GET(
   // Surface the status-relevant fields. Settle-only fields are nullable
   // until the meeting.ended webhook has fired; clients use their absence
   // to keep polling.
+  //
+  // M4.9: also expose `billable_window_start_ms` and `billable_window_end_ms`
+  // so the client can drive the ticker off the active-window boundaries
+  // (waiting state when start is null, frozen at end when set).
   return NextResponse.json({
     sessionId: session.session_id,
     status: session.status,
@@ -48,5 +52,7 @@ export async function GET(
     settled_amount: session.settled_amount ?? null,
     settle_tx_hash: session.settle_tx_hash ?? null,
     max_authorized_amount: session.max_authorized_amount,
+    billable_window_start_ms: session.billable_window_start_ms ?? null,
+    billable_window_end_ms: session.billable_window_end_ms ?? null,
   });
 }

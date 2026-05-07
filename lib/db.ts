@@ -24,6 +24,8 @@ import {
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 
+import type { ParticipantEvent } from '@/lib/billing';
+
 const REQUIRED_DDB_ENV_VARS = [
   'AWS_REGION',
   'DYNAMODB_TABLE_NAME',
@@ -64,7 +66,7 @@ function getDoc(): DynamoDBDocumentClient {
 }
 
 /** Lifecycle states for a session. Used as the DDB `status` attribute. */
-export type SessionStatus = 'AUTHORIZED' | 'ACTIVE' | 'COMPLETED' | 'SETTLE_FAILED';
+export type SessionStatus = 'AUTHORIZED' | 'ACTIVE' | 'COMPLETED' | 'SETTLE_FAILED' | 'TIMEOUT';
 
 /**
  * Session row schema. Field names use snake_case to match the underlying
@@ -77,6 +79,18 @@ export type SessionStatus = 'AUTHORIZED' | 'ACTIVE' | 'COMPLETED' | 'SETTLE_FAIL
  * PaymentPayload as a base64-encoded JSON string. We need to round-trip it
  * verbatim from /sessions to the webhook so settle uses the exact same
  * bytes the buyer signed.
+ *
+ * M4.9 additions:
+ *   - `participant_events` — append-only log of joined/left events from
+ *     Daily webhooks. Drives the active-window billing math
+ *     (`lib/billing.ts`).
+ *   - `billable_window_start_ms` / `billable_window_end_ms` — locked-once
+ *     timestamps marking when the count first reached 2 and first
+ *     dropped below 2. Set by the webhook; checked by status route +
+ *     timeout logic.
+ *   - `started_at_ms` — ms-precision creation time used by the 90s no-
+ *     expert-joined timeout. The original `started_at` is unix seconds;
+ *     we keep both rather than migrate the schema.
  */
 export type SessionRow = {
   session_id: string;
@@ -87,6 +101,10 @@ export type SessionRow = {
   video_room_id: string;
   video_room_url: string;
   started_at: number;
+  /** Optional ms-precision creation time (M4.9). Used by the 90s timeout
+   *  check. Older rows persisted before M4.9 won't have this and the
+   *  timeout check derives it from `started_at * 1000` as a fallback. */
+  started_at_ms?: number;
   max_authorized_amount: number;
   status: SessionStatus;
   expires_at: number;
@@ -96,6 +114,12 @@ export type SessionRow = {
   settle_tx_hash?: string;
   transcript?: string[];
   summary?: string;
+  /** M4.9: append-only Daily participant lifecycle events. */
+  participant_events?: ParticipantEvent[];
+  /** M4.9: locked once when participant count first reaches 2. */
+  billable_window_start_ms?: number;
+  /** M4.9: locked once when participant count first drops below 2. */
+  billable_window_end_ms?: number;
 };
 
 /**
@@ -192,11 +216,18 @@ export async function getLatestCompletedSession(): Promise<SessionRow | null> {
 
 /**
  * Mark a session as COMPLETED with the on-chain settle results. Conditional
- * on `status = AUTHORIZED` — this is the double-settle guard. If Daily
- * retries the webhook (e.g., our 200 response was lost), the second update
- * fails with ConditionalCheckFailedException. The webhook route catches
- * that and returns 200 to stop further retries; the original tx is already
- * on-chain so this is the correct idempotent behavior.
+ * on status being AUTHORIZED or ACTIVE — this is the double-settle guard.
+ * If a duplicate webhook delivery (e.g., participant.left + meeting.ended
+ * both firing) tries to settle a session that's already COMPLETED, the
+ * second update fails with ConditionalCheckFailedException. The webhook
+ * route catches that and returns 200 to stop further retries; the
+ * original tx is already on-chain so this is the correct idempotent
+ * behavior.
+ *
+ * M4.9: ACTIVE is now valid as a "settle from" state because the active-
+ * window flow transitions AUTHORIZED -> ACTIVE on the first
+ * participant.joined event. Settle then fires from participant.left when
+ * the window closes; at that point status is still ACTIVE.
  *
  * `#status` is aliased because `status` is a DDB reserved word.
  */
@@ -216,11 +247,12 @@ export async function markSessionCompleted(
       Key: { session_id: sessionId },
       UpdateExpression:
         'SET #status = :completed, settled_amount = :amt, settle_tx_hash = :hash, ended_at = :ended, duration_sec = :duration',
-      ConditionExpression: '#status = :authorized',
+      ConditionExpression: '#status IN (:authorized, :active)',
       ExpressionAttributeNames: { '#status': 'status' },
       ExpressionAttributeValues: {
         ':completed': 'COMPLETED' satisfies SessionStatus,
         ':authorized': 'AUTHORIZED' satisfies SessionStatus,
+        ':active': 'ACTIVE' satisfies SessionStatus,
         ':amt': fields.settled_amount,
         ':hash': fields.settle_tx_hash,
         ':ended': fields.ended_at,
@@ -228,6 +260,226 @@ export async function markSessionCompleted(
       },
     }),
   );
+}
+
+/**
+ * Append a participant event to the session's event log. Atomic via DDB
+ * `list_append + if_not_exists` (same pattern as transcript). Returns
+ * the updated row so callers can immediately recompute the active window
+ * over the full event log.
+ *
+ * Why we return the row: the webhook handler needs to call
+ * `computeBillableWindow(row.participant_events)` after the append to
+ * decide whether the window just opened/closed. Doing the append + read
+ * in one atomic UpdateItem with `ReturnValues: 'ALL_NEW'` is cheaper
+ * and race-free vs. update + get.
+ */
+export async function appendParticipantEvent(
+  sessionId: string,
+  event: ParticipantEvent,
+): Promise<SessionRow> {
+  const tableName = process.env.DYNAMODB_TABLE_NAME!;
+  const result = await getDoc().send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { session_id: sessionId },
+      UpdateExpression:
+        'SET participant_events = list_append(if_not_exists(participant_events, :empty), :delta)',
+      ExpressionAttributeValues: {
+        ':empty': [] as ParticipantEvent[],
+        ':delta': [event],
+      },
+      ReturnValues: 'ALL_NEW',
+    }),
+  );
+  return result.Attributes as SessionRow;
+}
+
+/**
+ * Set `billable_window_start_ms` once. Conditional on the field NOT
+ * already existing (idempotent — a duplicate webhook delivery is a
+ * no-op). Use this AFTER appending a participant.joined event and
+ * recomputing the window — only call when `computeBillableWindow`
+ * reports a `start_ms` and the row's existing field is undefined.
+ */
+export async function setBillableWindowStart(sessionId: string, ts_ms: number): Promise<void> {
+  const tableName = process.env.DYNAMODB_TABLE_NAME!;
+  try {
+    await getDoc().send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: { session_id: sessionId },
+        UpdateExpression: 'SET billable_window_start_ms = :ts',
+        ConditionExpression: 'attribute_not_exists(billable_window_start_ms)',
+        ExpressionAttributeValues: { ':ts': ts_ms },
+      }),
+    );
+  } catch (err) {
+    // ConditionalCheckFailedException is expected on duplicate webhook
+    // delivery; swallow it. Anything else bubbles.
+    if (
+      err &&
+      typeof err === 'object' &&
+      'name' in err &&
+      err.name === 'ConditionalCheckFailedException'
+    ) {
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Set `billable_window_end_ms` once. Mirror of `setBillableWindowStart`
+ * — conditional + idempotent. Called when participant count first
+ * drops below 2.
+ */
+export async function setBillableWindowEnd(sessionId: string, ts_ms: number): Promise<void> {
+  const tableName = process.env.DYNAMODB_TABLE_NAME!;
+  try {
+    await getDoc().send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: { session_id: sessionId },
+        UpdateExpression: 'SET billable_window_end_ms = :ts',
+        ConditionExpression: 'attribute_not_exists(billable_window_end_ms)',
+        ExpressionAttributeValues: { ':ts': ts_ms },
+      }),
+    );
+  } catch (err) {
+    if (
+      err &&
+      typeof err === 'object' &&
+      'name' in err &&
+      err.name === 'ConditionalCheckFailedException'
+    ) {
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Transition AUTHORIZED -> ACTIVE. Called by the webhook when the
+ * active window first opens (participant count reaches 2). Conditional
+ * on `#status = AUTHORIZED` so a duplicate webhook delivery is a no-op
+ * (the second call hits ConditionalCheckFailedException, which we
+ * swallow — the row is already in the correct state).
+ *
+ * No-op if the row is already ACTIVE / COMPLETED / SETTLE_FAILED /
+ * TIMEOUT — those terminal-or-later states win over a stale transition.
+ */
+export async function markSessionActive(sessionId: string): Promise<void> {
+  const tableName = process.env.DYNAMODB_TABLE_NAME!;
+  try {
+    await getDoc().send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: { session_id: sessionId },
+        UpdateExpression: 'SET #status = :active',
+        ConditionExpression: '#status = :authorized',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':active': 'ACTIVE' satisfies SessionStatus,
+          ':authorized': 'AUTHORIZED' satisfies SessionStatus,
+        },
+      }),
+    );
+  } catch (err) {
+    if (
+      err &&
+      typeof err === 'object' &&
+      'name' in err &&
+      err.name === 'ConditionalCheckFailedException'
+    ) {
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Transition AUTHORIZED -> TIMEOUT. Called by the status route when a
+ * session has been waiting for the second participant for more than
+ * 90 seconds. Conditional on `#status = AUTHORIZED` AND
+ * `attribute_not_exists(billable_window_start_ms)` — once the window
+ * has opened, the call is real and TIMEOUT no longer applies.
+ *
+ * No on-chain settle fires for TIMEOUT. The Permit2 authorization
+ * simply expires at its deadline (30 min). Zero USDC moves.
+ */
+export async function markSessionTimedOut(sessionId: string): Promise<void> {
+  const tableName = process.env.DYNAMODB_TABLE_NAME!;
+  try {
+    await getDoc().send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: { session_id: sessionId },
+        UpdateExpression: 'SET #status = :timeout',
+        ConditionExpression:
+          '#status = :authorized AND attribute_not_exists(billable_window_start_ms)',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':timeout': 'TIMEOUT' satisfies SessionStatus,
+          ':authorized': 'AUTHORIZED' satisfies SessionStatus,
+        },
+      }),
+    );
+  } catch (err) {
+    if (
+      err &&
+      typeof err === 'object' &&
+      'name' in err &&
+      err.name === 'ConditionalCheckFailedException'
+    ) {
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Mark a session SETTLE_FAILED after the retry loop in `lib/x402.ts`
+ * exhausted all attempts. The buyer's authorization stays valid until
+ * its deadline (30 min); the recap page surfaces a "Settlement failed"
+ * banner with a manual-retry option (Phase 6).
+ *
+ * Conditional on `#status IN (AUTHORIZED, ACTIVE)` — same allowed-from
+ * set as `markSessionCompleted` because settle can fire from either.
+ */
+export async function markSessionFailed(
+  sessionId: string,
+  fields: { ended_at: number; duration_sec: number },
+): Promise<void> {
+  const tableName = process.env.DYNAMODB_TABLE_NAME!;
+  try {
+    await getDoc().send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: { session_id: sessionId },
+        UpdateExpression: 'SET #status = :failed, ended_at = :ended, duration_sec = :duration',
+        ConditionExpression: '#status IN (:authorized, :active)',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':failed': 'SETTLE_FAILED' satisfies SessionStatus,
+          ':authorized': 'AUTHORIZED' satisfies SessionStatus,
+          ':active': 'ACTIVE' satisfies SessionStatus,
+          ':ended': fields.ended_at,
+          ':duration': fields.duration_sec,
+        },
+      }),
+    );
+  } catch (err) {
+    if (
+      err &&
+      typeof err === 'object' &&
+      'name' in err &&
+      err.name === 'ConditionalCheckFailedException'
+    ) {
+      return;
+    }
+    throw err;
+  }
 }
 
 /**

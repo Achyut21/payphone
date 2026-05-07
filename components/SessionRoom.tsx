@@ -53,13 +53,22 @@ type SessionRoomProps = {
   roomToken: string | null;
   expertName: string;
   expertSpecialty: string;
-  /** Unix seconds (NOT ms). The ticker counts from this. */
-  startedAt: number;
+  /**
+   * M4.9: ms-precision timestamp from the session row's
+   * `billable_window_start_ms` (if already set on first render — e.g.
+   * a buyer reloaded the page mid-call). Null while the active window
+   * is closed (still waiting for the expert to join). The Ticker
+   * shows "Waiting…" while null, and starts counting from this value
+   * once the active window opens.
+   */
+  initialBillableStartMs: number | null;
 };
 
 /** Status route response shape (subset). Mirrors the GET handler. */
 type StatusResponse = {
-  status: 'AUTHORIZED' | 'ACTIVE' | 'COMPLETED' | 'SETTLE_FAILED';
+  status: 'AUTHORIZED' | 'ACTIVE' | 'COMPLETED' | 'SETTLE_FAILED' | 'TIMEOUT';
+  billable_window_start_ms?: number | null;
+  billable_window_end_ms?: number | null;
 };
 
 /** Polling interval for the status endpoint, in ms. */
@@ -85,17 +94,26 @@ export function SessionRoom({
   roomToken,
   expertName,
   expertSpecialty,
-  startedAt,
+  initialBillableStartMs,
 }: SessionRoomProps) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
   const callRef = useRef<DailyCall | null>(null);
   const [joined, setJoined] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // M4.9: server-driven active-window start (unix seconds). The Ticker
+  // counts from this; null = still waiting for expert. Initialized
+  // from the SSR'd row so a reload mid-call resumes correctly. Updated
+  // on every poll of /status — only flips from null to a value once
+  // (server side is locked once via setBillableWindowStart).
+  const [billableStartSec, setBillableStartSec] = useState<number | null>(
+    initialBillableStartMs !== null ? Math.floor(initialBillableStartMs / 1000) : null,
+  );
   // Unix seconds (NOT ms). Set when the call ends — either because the
-  // user clicked our Leave button or Daily fired `left-meeting`. While
-  // null, the ticker counts up; once set, the ticker freezes at this
-  // value (so the displayed total matches what we'll settle for).
+  // user clicked our Leave button or Daily fired `left-meeting` or the
+  // remote participant left (M4.9 Bug 2). While null, the ticker counts
+  // up; once set, the ticker freezes at this value (so the displayed
+  // total matches what we'll settle for).
   const [endedAtSec, setEndedAtSec] = useState<number | null>(null);
   // M4.9 Bug 2 fix: tracks whether the OTHER participant left the call
   // (vs the local user clicking End call). When true, the side panel
@@ -376,7 +394,9 @@ export function SessionRoom({
     };
   }, [roomUrl, roomToken, sessionId, expertName]);
 
-  // Poll session status; navigate to recap when COMPLETED.
+  // Poll session status; navigate to recap when COMPLETED, sync the
+  // active-window boundaries from the server, navigate to /timeout
+  // page if the 90s no-expert timer fired.
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
@@ -385,8 +405,24 @@ export function SessionRoom({
         if (!res.ok) return; // 404/5xx → ignore this tick, try again next interval
         const body = (await res.json()) as StatusResponse;
         if (cancelled) return;
-        if (body.status === 'COMPLETED') {
+
+        // M4.9: lift the server-driven active-window boundaries into
+        // local state so the Ticker can render off them. setState is
+        // a no-op when the value is unchanged.
+        if (body.billable_window_start_ms !== null && body.billable_window_start_ms !== undefined) {
+          const startSec = Math.floor(body.billable_window_start_ms / 1000);
+          setBillableStartSec((prev) => prev ?? startSec);
+        }
+        if (body.billable_window_end_ms !== null && body.billable_window_end_ms !== undefined) {
+          const endSec = Math.floor(body.billable_window_end_ms / 1000);
+          setEndedAtSec((prev) => prev ?? endSec);
+        }
+
+        if (body.status === 'COMPLETED' || body.status === 'SETTLE_FAILED') {
           router.push(`/session/${sessionId}/recap`);
+        }
+        if (body.status === 'TIMEOUT') {
+          router.push(`/session/${sessionId}/timeout`);
         }
       } catch {
         // Network blip — silently retry on the next interval.
@@ -432,7 +468,7 @@ export function SessionRoom({
                 : 'Ending call · settling'
               : `On call · ${expertName}`}
           </span>
-          <Ticker startedAt={startedAt} endedAt={endedAtSec} />
+          <Ticker startedAt={billableStartSec} endedAt={endedAtSec} />
         </div>
         <OnAirBadge settling={settling} compact />
       </div>
@@ -499,7 +535,7 @@ export function SessionRoom({
             Running total
           </span>
           <div className="flex justify-end">
-            <Ticker startedAt={startedAt} endedAt={endedAtSec} />
+            <Ticker startedAt={billableStartSec} endedAt={endedAtSec} />
           </div>
           {settling ? (
             // M4.9: when the call is wrapping, swap the per-second hint

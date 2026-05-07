@@ -85,7 +85,7 @@ export default async function SessionPage({ params }: SessionPageProps) {
       roomToken={hostToken}
       expertName={expertName}
       expertSpecialty={expertSpecialty}
-      startedAt={session.started_at}
+      initialBillableStartMs={session.billable_window_start_ms ?? null}
     />
   );
 }

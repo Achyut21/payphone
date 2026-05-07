@@ -36,10 +36,16 @@ import { deleteWebhook, listWebhooks, registerWebhook } from '../lib/daily';
  *
  * For PayPhone, realtime utterance capture happens in the browser
  * (`components/SessionRoom.tsx`) and POSTs each line to
- * `/api/sessions/[id]/transcript`. The webhook only needs `meeting.ended`
- * for on-chain settle — same as M3.
+ * `/api/sessions/[id]/transcript`.
+ *
+ * M4.9: subscribe to participant.joined / participant.left in addition
+ * to meeting.ended. Active-window billing tracks the participant count
+ * via these events: window opens when count reaches 2, closes when it
+ * drops back below 2. Settle now fires from participant.left when the
+ * window closes (not from meeting.ended which only fires when the room
+ * is fully empty). meeting.ended is kept as an idempotent fallback.
  */
-const EVENTS = ['meeting.ended'];
+const EVENTS = ['meeting.ended', 'participant.joined', 'participant.left'];
 
 async function main(): Promise<void> {
   const target = process.argv[2];
