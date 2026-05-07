@@ -25,6 +25,7 @@ The pitch in three lines:
 | **M3**    | Daily.co video rooms + DDB + duration-derived settle | ✅ done (May 6)   |
 | **M4**    | Marketplace UI + live session + AI recap & chat      | ✅ done (May 6)   |
 | **M4.5**  | UI/UX overhaul: dark mode landing + navbar + polish  | ✅ done (May 6)   |
+| **M4.9**  | Bug fixes + active-window billing architectural fix  | ✅ done (May 7)   |
 | M5        | Mainnet flip + on-stage live demo                    | next              |
 
 ### M1 proof
@@ -181,6 +182,116 @@ project from "wired prototype" to "submission-grade UI."
   `useChat` + `DefaultChatTransport`, auto-scroll. The M4 canonical session
   `c0a5c8df-...` (84.84s, $0.84, tx `0x47dab9fe...`) remains the
   source-of-truth proof that the call → settle → recap → chat path works.
+
+### M4.9 proof
+
+A bug-fix + edge-case milestone between M4.5 (UI redesign) and M5 (mainnet
+flip), addressing four issues that surfaced during M4.5 dogfooding: a
+Daily strict-mode race causing the "Connecting…" overlay to stick, the
+buyer's ticker continuing to count after the OTHER party left, per-second
+billing starting from session creation rather than from when both parties
+were actually present, and on-chain settle waiting for `meeting.ended`
+(room fully empty) rather than firing on the first leave.
+
+**Backend & math.**
+
+- **Active-window billing** (`lib/billing.ts`, NEW). Two pure functions —
+  `computeBillableWindow(events)` and `activeWindowDurationSec(events, nowMs?)`
+  — derive `{start_ms, end_ms}` from a `ParticipantEvent[]` log. Window
+  opens the first instant participant count reaches 2 and closes the
+  first instant it drops below 2. Set-replay strategy makes both functions
+  idempotent under Daily's at-least-once webhook delivery and commutative
+  under timestamp-sort (delivery order doesn't change the answer). The
+  on-chain settle and the buyer's displayed ticker now derive from the
+  SAME math — they cannot disagree.
+- **Webhook handler rewrite** (`app/api/webhooks/daily/route.ts`). Three
+  handlers behind a `switch` over event type. `participant.joined` /
+  `participant.left` append to the event log, recompute the window, open
+  or close the boundary via idempotent setters (`attribute_not_exists`),
+  and on first window-close fire settle via a single `fireSettleAndPersist`
+  funnel. `meeting.ended` is now an idempotent ack — short-circuits to
+  `200` if the row already settled.
+- **DDB schema extensions** (`lib/db.ts`). New columns: `participant_events`,
+  `billable_window_start_ms`, `billable_window_end_ms`, `started_at_ms`.
+  New status: `TIMEOUT`. New helpers, all idempotent: `appendParticipantEvent`,
+  `setBillableWindowStart`, `setBillableWindowEnd`, `markSessionActive`
+  (AUTHORIZED → ACTIVE), `markSessionTimedOut` (gated on no window-start),
+  `markSessionFailed` (settle-failed branch), `markSessionRetrySettled`
+  (SETTLE_FAILED → COMPLETED for manual retry).
+- **90-second no-expert timeout**. Implemented lazily in the status route
+  — when a polled session is still AUTHORIZED with no `billable_window_start_ms`
+  past 90s, transitions to `TIMEOUT` on the next poll. No background job,
+  no scheduler — picks up free off the existing 2s client poll.
+- **`/session/[id]/timeout` page** (NEW). Server-rendered, status-branched,
+  AuroraBackground + clear "no funds moved on-chain" reassurance + single
+  "Back to marketplace" CTA.
+- **Manual retry-settle** (`POST /api/sessions/[id]/retry-settle`, NEW).
+  Auth-gated, idempotent endpoint reachable from a "Retry settlement"
+  button on the recap when the row landed in `SETTLE_FAILED`. Reconstructs
+  settle requirements with the row's persisted `duration_sec` so the
+  retry settles for exactly the same amount the buyer originally saw.
+
+**The hardest bug — "Connecting to the room…" sticking.** Diagnostic
+console logs revealed that React 19 strict mode + Daily's iframe SDK
+interact pathologically:
+
+1. Mount 1 calls `DailyIframe.createFrame()`, starts `await call.join()`.
+2. React strict-mode cleanup synchronously fires `void call.destroy()`.
+3. Mount 2 sees the call in `'loading'` state, awaits `existing.destroy()`.
+4. Mount 2 **hangs** because Daily's `destroy()` postMessage to its iframe
+   never gets ack'd while the iframe is mid-join (the cross-origin
+   postMessage errors in the console were the symptom).
+5. Mount 1's `join()` actually completes — Daily IS connected, video IS
+   rendering — and Mount 1's listeners DO fire, but they all see Mount 1's
+   `cancelled === true` and return early. `setJoined(true)` is never
+   called. Daily connected, React state thinks not. Overlay sticks.
+
+The fix is the **deferred-destroy + reuse pattern**: a module-scoped
+`pendingDestroyTimeout` that defers destroy 200ms; the next mount cancels
+it and REUSES the existing call instead of trying to destroy + recreate.
+For real navigation (no remount within 200ms), the destroy fires normally.
+Production behavior unchanged — strict-mode-only quirk fixed.
+
+**UX polish.**
+
+- **Buyer rename Alice → Achyut** to remove the on-stage visual collision
+  with seeded expert "Alice Chen". Cookie `id: 'alice'` kept stable so
+  existing auth cookies and DDB rows continue to resolve.
+- **`readableError(err)` helper** in `SessionRoom.tsx` walks Daily's
+  plain-object error shapes (`{errorMsg, error: {msg, type}}`) so failures
+  render as e.g. `join failed: The meeting is full` instead of
+  `join failed: [object Object]`.
+- **`participant-left` listener** added (distinct from the existing
+  `left-meeting` for the local user) so the buyer's ticker freezes the
+  instant the OTHER party leaves and the sidebar shows
+  `{expertName} left the call. Settling on-chain…`.
+
+**Tests.** `scripts/test-active-window.ts` (NEW, 164 lines) — 8 unit
+tests via Node 22's built-in `node:test` runner under `tsx`. Zero new
+runtime deps. ~96ms total. All 8 pass on every commit. See
+[Testing](#testing) for the case list.
+
+**QA — 9 manual scenarios run on dev (`pnpm dev` + ngrok), 9/9 pass.**
+
+| #   | Scenario                                                        | Result                                                                                                                                                                                   |
+| --- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Happy path — buyer joins, expert joins, talk, buyer ends        | ✅ Ticker `$0.00 / Waiting` (gray) until expert joins, then blue ticking; freeze on End; recap matches active-window duration × \$0.01.                                                  |
+| 2   | Buyer leaves first (clicks End)                                 | ✅ Both tabs freeze; recap renders with correct duration.                                                                                                                                |
+| 3   | Expert leaves first                                             | ✅ Buyer's ticker freezes immediately via `participant-left`; sidebar shows "{expert} left the call. Settling on-chain…"; auto-redirect to recap.                                        |
+| 4   | Tab close without End button                                    | ✅ Daily fires `participant.left` automatically via `navigator.sendBeacon`; server-side flow identical to #2/#3.                                                                         |
+| 5   | Both close simultaneously                                       | ✅ Idempotent `setBillableWindowEnd` ensures only the first leave's timestamp wins; settle fires from the first leave; `meeting.ended` arrives later as a no-op ack.                     |
+| 6   | 90s no-expert timeout                                           | ✅ Buyer joins alone; after 90s status route's lazy timeout fires; row → `TIMEOUT`; client polling navigates to `/session/[id]/timeout` page; no on-chain effect (Permit2 just expires). |
+| 7   | Third tab tries to join 2-person room                           | ✅ Daily enforces `max_participants: 2`; third joiner's `call.join()` rejects; UI displays `join failed: The meeting is full`; original two-person settle proceeds normally.             |
+| 8   | Connecting overlay verification across multiple expert switches | ✅ Validated across 6+ expert switches in scenarios 1-6 — overlay dismisses cleanly every time after the deferred-destroy + reuse fix.                                                   |
+| 9   | Mobile (375px) responsive layout                                | ✅ M4.5 already validated the responsive layout at 375px; M4.9 made no JSX layout changes (state-management only), so the responsive design is preserved end-to-end.                     |
+
+**On-chain proof.** Multiple successful settles during scenario 1-3
+testing — buyer wallet `0xE01669A01E28E905055Ac6cD33c19ced7e10d870` had
+$22.05 USDC on Base Sepolia at session start (no top-up needed); each
+settle deducted exactly the active-window duration × $0.01. The M4
+canonical session and BaseScan links carry over verbatim — M4.9 didn't
+change the on-chain math, only **when** it fires and **which seconds**
+it counts.
 
 ## Stack
 
@@ -402,6 +513,30 @@ pnpm tsx scripts/inspect-session.ts <sessionId> --transcript
 
 `<sessionId>` shows in the URL bar of `/session/<id>` and `/session/<id>/recap`.
 
+### M4.9: bug-fixes + active-window billing (verification run)
+
+Same setup as M4. M4.9 changed the webhook event subscription list, so on
+first run after pulling this version **re-register the Daily webhook**:
+
+```bash
+pnpm tsx scripts/register-daily-webhook.ts https://<your-ngrok-domain>.ngrok-free.dev/api/webhooks/daily
+# → prints a fresh DAILY_WEBHOOK_SECRET; rotate it in .env.local; restart pnpm dev.
+```
+
+Then run the unit tests and a happy-path session:
+
+```bash
+pnpm test                                                 # 8/8 active-window math tests, ~96ms
+pnpm dev                                                  # Terminal 1
+ngrok http --url=<your-ngrok-domain>.ngrok-free.dev 3000  # Terminal 2
+```
+
+Open the marketplace → click an expert → talk in two tabs → End. The
+ticker should sit at `$0.00 / Waiting` in muted gray until the second
+participant joins, then start counting up. End the call, watch it freeze,
+recap shows the active-window duration × \$0.01. See the Status →
+[M4.9 proof](#m49-proof) table for the full nine-scenario QA matrix.
+
 ## Diagnostics
 
 Living under `scripts/`:
@@ -416,6 +551,7 @@ Living under `scripts/`:
 | `probe-supported.ts`        | Lists the (scheme, network) pairs the CDP facilitator advertises                                                     |
 | `probe-usdc.ts`             | Reads `name`/`version`/`DOMAIN_SEPARATOR` etc. from USDC on-chain                                                    |
 | `verify-tx.ts`              | Inspects a tx receipt + decodes USDC `Transfer` events                                                               |
+| `test-active-window.ts`     | (M4.9) Unit tests for `lib/billing.ts` active-window math + settle-amount cap. Run via `pnpm test`.                  |
 
 ## Layout
 
@@ -477,7 +613,40 @@ pnpm build          # next build
 pnpm lint           # eslint
 pnpm format         # prettier --write
 pnpm format:check   # prettier --check (CI-friendly)
+pnpm test           # (M4.9) tsx --test scripts/test-active-window.ts
 ```
 
-The pre-commit drill is `pnpm lint && pnpm format && pnpm build` — keep those
-green before pushing.
+The pre-commit drill is `pnpm lint && pnpm format && pnpm build && pnpm test` —
+keep those green before pushing.
+
+## Testing
+
+Unit tests live in `scripts/test-active-window.ts` and run via Node 22+'s
+built-in `node:test` runner under `tsx`. Zero new runtime deps. The tests
+cover the active-window math in `lib/billing.ts` that drives both the
+on-chain settle amount and the buyer's displayed ticker — if either
+function drifts these tests catch it.
+
+| #   | Test                                                                  | Verifies                                                                                                                      |
+| --- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| 1   | empty events → window never opens                                     | An empty event log returns `{start_ms: undefined, end_ms: undefined}` and `activeWindowDurationSec → 0`.                      |
+| 2   | single participant only → window never opens                          | One participant joining alone never opens the window — the buyer is not billed for waiting.                                   |
+| 3   | two participants normal flow → opens at 2nd join, closes at 1st leave | The canonical case. The buyer's pre-expert wait time is **not** billed; only the time both were in the room counts.           |
+| 4   | out-of-order events → identical result (delivery-order independence)  | Daily's webhooks are at-least-once and not strictly ordered — feeding events in reverse must produce the same window math.    |
+| 5   | three participants → 1st pair opens, 1st leave below count-2 closes   | Window opens when count first reaches 2 (not 3); closes when count first drops below 2 (not when room fully empties).         |
+| 6   | settle amount cap → duration × rate clamps at the upto MAX            | `computeSettleAmount(durationSec)` clamps at `M2_UPTO_MAX_ATOMIC` (\$5) regardless of duration. The signed permit caps spend. |
+| 7   | idempotent under duplicate events (Daily at-least-once)               | Re-applying the same `joined` event twice is a no-op (Set-replay) — duplicates do not inflate the duration.                   |
+| 8   | window opened but not closed → uses `nowMs` as running end            | Drives the live client ticker — the running duration uses the supplied `nowMs` while the window is still open.                |
+
+Run them with:
+
+```bash
+pnpm test
+```
+
+All 8 tests should pass in ~100ms. CI-friendly exit codes (0 / non-zero).
+
+The 9-scenario manual QA matrix from M4.9 is documented in the
+[M4.9 proof](#m49-proof) section above. To rerun: `pnpm dev`, `ngrok`,
+`pnpm tsx scripts/register-daily-webhook.ts <ngrok-url>/api/webhooks/daily`,
+then drive scenarios 1-9 in the browser.
