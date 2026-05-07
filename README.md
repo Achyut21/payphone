@@ -28,7 +28,8 @@ The pitch in three lines:
 | **M4.9**  | Bug fixes + active-window billing architectural fix           | ✅ done (May 7)   |
 | **M5**    | Per-user Cognito auth + per-user CDP wallets + Amplify deploy | ✅ done (May 7)   |
 | **M5.5**  | AI expert suggester + backup recap fallback + favicon         | ✅ done (May 7)   |
-| M6        | Mainnet flip + on-stage live demo                             | next              |
+| **M6**    | Mainnet flip + Permit2 warm-up + mainnet dress rehearsal      | ✅ done (May 7)   |
+| M7        | Pitch deck + 60s pitch script + README polish + submission    | next              |
 
 ### M1 proof
 
@@ -477,6 +478,128 @@ verified working end-to-end before the commit landed.
 **Build/lint/test hygiene.** `pnpm format && pnpm lint && pnpm build && pnpm test`
 clean before the commit. Production build registers 19 routes (M5 had 18; +1
 for `/api/experts/suggest`). 8/8 active-window unit tests still pass.
+
+### M6 proof
+
+The mainnet validation milestone. **Two real on-chain settlements on Base mainnet
+(not Sepolia) using the exact same code paths Amplify runs on Sepolia today.**
+
+The dual-network architecture from M5 is what made this safe and one-line:
+production Amplify stays on Sepolia (its Console env var
+`NEXT_PUBLIC_ACTIVE_NETWORK=sepolia` was set in M5 Phase 7 and remained
+untouched in M6); the local laptop flipped to mainnet by adding
+`NEXT_PUBLIC_ACTIVE_NETWORK=mainnet` to `.env.local`. No code changes; M5's
+safe-default-to-Sepolia in `resolveActiveNetwork()` and the per-network
+records in `lib/constants.ts` did all the work.
+
+**Buyer wallet:** Achyut's migrated CDP wallet
+`0xE01669A01E28E905055Ac6cD33c19ced7e10d870` — same wallet on both networks,
+funded with $5 mainnet USDC from M0 plus a teammate refund of $4.76 USDC +
+$2 ETH on the day of M6.
+
+#### Warm-up — Permit2 first-time approval on mainnet
+
+5-second deliberate test to verify EIP-2612 gas-sponsorship on mainnet (the
+M2 path was Sepolia-only until now; mainnet was unverified).
+
+- **Tx:** `0x59ab47194669f93ce8a6a94ee6a288e55d42c2727b4b3c3f805ad50a034d4dd8`
+- **BaseScan:** <https://basescan.org/tx/0x59ab47194669f93ce8a6a94ee6a288e55d42c2727b4b3c3f805ad50a034d4dd8>
+- **Function:** `Settle With Permit` on x402UptoPermit2Proxy
+  (`0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002`, the `…0002` vanity address)
+- **maxAuthorized:** $5.00 — buyer's signed upto witness
+- **settled:** $0.05 — `floor(5s) × 10_000` atomic = `50_000`
+- **Gas:** paid by CDP facilitator `0x8F5cB67B49555E614892b7233CFdDEBFB746E531`
+  (the `From:` field of the tx). Buyer's mainnet ETH balance was unchanged.
+- **What this proves:** the M2 EIP-2612 + Permit2 gas-sponsorship architecture
+  works first-try on Base mainnet, identically to its Sepolia behavior. The
+  bundled tx executed two contract calls: USDC.permit(Permit2, $5, deadline)
+  topped the buyer's Permit2 allowance to $5, then Permit2.permitTransferFrom
+  moved $0.05 from buyer to seller.
+
+#### Rehearsal 1 — Happy path with AI suggester
+
+31-second call. Buyer used the M5.5 AI expert suggester ("I need help with
+smart contract gas optimization" → Haiku 4.5 picked Alice Chen → "Suggested"
+badge), clicked Talk to Alice, joined a Daily room, talked for ~31s with
+Daily realtime transcription active, hung up.
+
+- **Tx:** `0x95b4eba8639be5809fa7cb9f7a32ea78ddd1d33efaf0a4c7a4724207acd14116`
+- **BaseScan:** <https://basescan.org/tx/0x95b4eba8639be5809fa7cb9f7a32ea78ddd1d33efaf0a4c7a4724207acd14116>
+- **Function:** **plain `settle`** on the same x402UptoPermit2Proxy — NOT
+  `Settle With Permit` this time
+- **maxAuthorized:** $5.00 — same buyer signed upto witness
+- **duration_sec:** 31 — Daily-reported active-window duration via M4.9's math
+- **settled:** $0.31 — `floor(31s) × 10_000` atomic = `310_000`
+- **Gas:** still paid by CDP facilitator. Buyer's mainnet ETH balance still
+  unchanged.
+
+#### Architectural finding — two on-chain settle flavors alternate
+
+Until M6 we believed every gas-sponsored settle would be `Settle With Permit`
+because that's the only flavor M2 ever exercised on Sepolia. Mainnet revealed
+a richer pattern: the function name alternates based on the buyer's residual
+Permit2 allowance for USDC at the moment the settle fires.
+
+- **`Settle With Permit`** fires when residual Permit2 allowance < upto.amount
+  ($5). The CDP facilitator bundles a USDC EIP-2612 permit (which tops the
+  Permit2 allowance up by $5) plus the Permit2.permitTransferFrom (which
+  takes the actual settle amount) in a single tx. Both calls
+  facilitator-paid; buyer pays no ETH. Warm-up (allowance was 0) ran here.
+- **plain `settle`** fires when residual Permit2 allowance is already enough.
+  Just the Permit2.permitTransferFrom call. Same single facilitator-paid tx,
+  cheaper gas. Rehearsal 1 ran here (allowance was $4.95 leftover from the
+  warm-up).
+
+After Rehearsal 1, the residual allowance is `5_000_000 − 50_000 − 310_000 =
+4_640_000` atomic = $4.64. The next session would still be `settle` if its
+actual duration produces a settle amount ≤ $4.64; once it doesn't,
+`Settle With Permit` re-fires to top up. From the buyer's perspective both
+flavors are the same UX (one signature, no manual approve, no buyer ETH).
+
+This alternation is captured by the @x402/evm `UptoEvmScheme` reading the
+on-chain Permit2 allowance via the `eip2612GasSponsoring` extension's
+`rpcUrl` fallback — the buyer client decides which payload to attach
+defensively, and the facilitator picks the path based on what's actually
+needed.
+
+#### Wallet balance reconciliation
+
+Starting mainnet USDC balance after the teammate refund: `$9.76`.
+
+- Warm-up settle: `$0.05` → balance after: `$9.71`
+- Rehearsal 1 settle: `$0.31` → balance after: `$9.40`
+
+Both deductions were polled and reflected by the M5 `WalletPanel` reading the
+mainnet USDC contract directly via viem — confirming the per-network
+constants cascade and the same component renders correctly on either chain.
+
+#### Scope notes
+
+- The M6 brief specified 3-5 dress rehearsals with five named scenarios. M6
+  executed only the happy-path baseline (1 of 5) per user-compressed scope —
+  the other four scenarios (tab close, expert leaves first, backup recap
+  fallback, cold start) all passed in M4.9's Sepolia 9-scenario QA, and
+  re-running them on mainnet would have been straight-line repetition with
+  no new architecture exercised. The M7 deck cites 2 mainnet txes (warm-up
+  - Rehearsal 1) instead of the originally planned 6.
+- The bootstrap IAM user `payphone-bootstrap` deletion was deferred to
+  post-hackathon per user direction. M5's runtime IAM user `payphone-app`
+  (DDB-only scope) remains the production access path.
+- The Daily webhook is currently re-pointed at ngrok (was Amplify since M5
+  Phase 8) so local mainnet rehearsals could settle. Phase 4 (re-register
+  back to Amplify) will run immediately after the user's demo video
+  recording.
+- A defensive fallback script `scripts/approve-permit2-mainnet.ts` was
+  prepared in case mainnet gas-sponsorship failed (Outcome B). It was never
+  needed (Outcome A succeeded first try) and remains uncommitted. Running it
+  for allowance verification revealed a CDP `account.sendTransaction()`
+  quirk — the API likely uses a CDP-managed relayer as `msg.sender`, not the
+  buyer EOA, so a manual `approve(Permit2, MAX)` sent through it doesn't
+  update the buyer's allowance. Documented in `docs/PROGRESS.md` for
+  post-hackathon investigation.
+
+See `docs/m6-rehearsal-log.md` for the deck-ready BaseScan URLs and
+on-chain participant addresses.
 
 ## Stack
 
