@@ -89,10 +89,17 @@ function buildVerifyRequirements(payTo: `0x${string}`): PaymentRequirements {
 
 /**
  * Daily participant lifecycle event payload (subset). Field names mirror
- * Daily's webhook docs. `joined_at` / `left_at` are unix seconds.
- * `participant_id` is the per-meeting id (stable for the life of one
- * join — different from `user_id` which is per-Daily-account and not
- * present on anonymous joins).
+ * Daily's webhook docs.
+ *
+ * IMPORTANT: Daily's webhook payload identifies participants by
+ * `session_id` (a per-meeting id, regenerated on every join), NOT
+ * `participant_id`. The `participant_id` field documented in some
+ * places refers to the room participant id which is NOT in the
+ * payload — what Daily actually sends is `payload.session_id`. We
+ * read both keys defensively to be forward-compatible if Daily
+ * harmonizes the naming.
+ *
+ * `joined_at` / `left_at` are unix seconds (with fractional precision).
  */
 type DailyParticipantEvent = {
   version?: string;
@@ -101,6 +108,9 @@ type DailyParticipantEvent = {
   event_ts?: number;
   payload?: {
     room?: string;
+    /** Daily's actual field — per-meeting participant id. */
+    session_id?: string;
+    /** Documented variant; not present in current Daily payloads. */
     participant_id?: string;
     user_id?: string;
     joined_at?: number;
@@ -305,10 +315,13 @@ async function handleParticipantLifecycle(event: DailyParticipantEvent): Promise
     return NextResponse.json({ ok: false, note: 'missing room' }, { status: 200 });
   }
   const eventType = event.type === 'participant.joined' ? 'joined' : 'left';
-  const participantId = payload.participant_id;
+  // Daily sends the per-meeting participant id as `payload.session_id`
+  // — see the type doc above. Fall back to `participant_id` if Daily
+  // harmonizes the field name in a future API version.
+  const participantId = payload.session_id ?? payload.participant_id;
   if (!participantId) {
-    console.error('[webhooks/daily] participant event missing participant_id', event);
-    return NextResponse.json({ ok: false, note: 'missing participant_id' }, { status: 200 });
+    console.error('[webhooks/daily] participant event missing participant id', event);
+    return NextResponse.json({ ok: false, note: 'missing participant id' }, { status: 200 });
   }
 
   // Daily's joined_at / left_at are unix seconds (with potential

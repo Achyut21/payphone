@@ -88,6 +88,39 @@ type TranscriptLine = {
   isLocal: boolean;
 };
 
+// ─── M4.9 Bug 1 ROOT FIX: deferred destroy (module-scoped) ───
+//
+// React 19 strict mode double-mounts effects in dev. Daily's iframe SDK
+// has a global singleton + an iframe whose `destroy()` is async +
+// communicates with the iframe over postMessage. The interaction is
+// pathological:
+//
+//   Mount 1:  createFrame → call.join() begins
+//   Mount 1 cleanup:  void call.destroy()  (async, fires destroy)
+//   Mount 2:  getCallInstance() returns Mount 1's call (state='loading')
+//   Mount 2:  await existing.destroy()  ← HANGS because the iframe is
+//             busy joining and won't ack the destroy postMessage
+//
+// Mount 1's join() actually completes (Daily IS connected, video IS
+// rendering), but Mount 1's listeners all see Mount 1's `cancelled=true`
+// closure flag and return early — so `setJoined(true)` never fires.
+// Mount 2 is permanently hung. The "Connecting…" overlay sticks
+// forever.
+//
+// Diagnostic logs in browser console confirmed the exact sequence:
+//   syncJoined via 'joined-meeting'  cancelled: TRUE  (mount 1)
+//   after await call.join()          cancelled: TRUE  (mount 1)
+//   ↑ no further mount 2 logs after `setup begin` ↑
+//
+// FIX: don't await destroy on cleanup. Defer it via setTimeout. If a
+// remount happens within 200ms (strict mode), the new mount cancels
+// the pending destroy and REUSES the existing call. Only on real
+// unmount (page navigation past 200ms) does the destroy actually fire.
+//
+// Module-scoped because all SessionRoom mounts must coordinate — a
+// per-component-instance ref wouldn't survive Mount 1's cleanup.
+let pendingDestroyTimeout: ReturnType<typeof setTimeout> | null = null;
+
 export function SessionRoom({
   sessionId,
   roomUrl,
@@ -99,6 +132,10 @@ export function SessionRoom({
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
   const callRef = useRef<DailyCall | null>(null);
+  // M4.9 Bug 1 backstop: meetingState() polling interval. Captured in a
+  // ref so the effect cleanup can clear it on unmount/strict-mode
+  // re-mount. Self-clears once we observe joined-meeting.
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [joined, setJoined] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // M4.9: server-driven active-window start (unix seconds). The Ticker
@@ -134,47 +171,79 @@ export function SessionRoom({
 
   // Mount the Daily iframe + join.
   //
-  // React Strict Mode in dev double-mounts effects. Daily enforces a
-  // global singleton on `DailyIframe` instances and `destroy()` is async,
-  // so a naive `if (callRef.current) return` guard isn't enough — by the
-  // time the second mount runs, our ref has been nulled by the cleanup
-  // but Daily's internal singleton hasn't released yet, and createFrame
-  // throws "Duplicate DailyIframe instances are not allowed".
-  //
-  // Fix: do setup inside an async function. If `getCallInstance()` finds
-  // a leftover from a previous mount, await its destroy before creating
-  // the new one. Use a `cancelled` flag so the cleanup of an already-
-  // unmounted effect doesn't attach event handlers to a stale instance.
+  // M4.9 Bug 1 ROOT FIX: see the long comment on `pendingDestroyTimeout`
+  // at module scope. tl;dr: don't await destroy in setup, don't destroy
+  // synchronously in cleanup. Defer destroy 200ms; the next mount
+  // cancels it and REUSES the existing call instead of trying to
+  // recreate one. This sidesteps the strict-mode race where Daily's
+  // destroy() postMessage hangs because the iframe is mid-join.
   useEffect(() => {
     let cancelled = false;
 
-    const setup = async () => {
-      // Drain any pending destroy from a previous mount.
-      const existing = DailyIframe.getCallInstance();
-      if (existing) {
-        try {
-          await existing.destroy();
-        } catch {
-          /* best-effort; the singleton is module-level so we can't
-             really recover beyond logging anyway */
-        }
-      }
-      if (cancelled || !containerRef.current) return;
+    // Cancel any pending destroy from a recent unmount. If this fires,
+    // it means the previous mount unmounted within 200ms — almost
+    // certainly a strict-mode remount. We're going to reuse its call.
+    if (pendingDestroyTimeout) {
+      clearTimeout(pendingDestroyTimeout);
+      pendingDestroyTimeout = null;
+    }
 
-      const call = DailyIframe.createFrame(containerRef.current, {
-        iframeStyle: {
-          width: '100%',
-          height: '100%',
-          border: '0',
-          borderRadius: '12px',
-        },
-        // Daily's built-in leave button shows a confirmation dialog and
-        // requires two clicks to fully tear down. We use our own button
-        // in the side panel instead — single source of truth, single
-        // click. Hides the in-iframe button entirely.
-        showLeaveButton: false,
-        showFullscreenButton: true,
-      });
+    const setup = async () => {
+      const existing = DailyIframe.getCallInstance();
+      const existingState = existing?.meetingState();
+
+      let call: DailyCall;
+      // States where the call is alive and we can reuse it directly.
+      // 'new' / 'loaded' = freshly created but join not yet called.
+      // 'loading' / 'joining-meeting' = join in progress.
+      // 'joined-meeting' = already joined.
+      const reusableStates = new Set([
+        'new',
+        'loaded',
+        'loading',
+        'joining-meeting',
+        'joined-meeting',
+      ]);
+      if (existing && existingState && reusableStates.has(existingState)) {
+        // REUSE PATH. Don't destroy, don't recreate, don't re-join.
+        // Just attach our listeners and sync state. If the previous
+        // mount's join() is in progress, our listeners pick up the
+        // `joined-meeting` event when it eventually fires. If it's
+        // already joined, we sync joined=true synchronously below.
+        call = existing;
+      } else {
+        // CREATE PATH. Either no existing call, or it's in a terminal
+        // state ('left-meeting' / 'error'). Destroy any leftover
+        // (best-effort, with timeout race so we don't hang) and create
+        // a fresh frame.
+        if (existing) {
+          try {
+            await Promise.race([
+              existing.destroy(),
+              new Promise<void>((resolve) => setTimeout(resolve, 500)),
+            ]);
+          } catch {
+            /* drain failed; proceed with createFrame anyway */
+          }
+        }
+        if (cancelled || !containerRef.current) {
+          return;
+        }
+        call = DailyIframe.createFrame(containerRef.current, {
+          iframeStyle: {
+            width: '100%',
+            height: '100%',
+            border: '0',
+            borderRadius: '12px',
+          },
+          // Daily's built-in leave button shows a confirmation dialog and
+          // requires two clicks to fully tear down. We use our own button
+          // in the side panel instead — single source of truth, single
+          // click. Hides the in-iframe button entirely.
+          showLeaveButton: false,
+          showFullscreenButton: true,
+        });
+      }
       callRef.current = call;
 
       // M4.9 Bug 1 fix: React 19 Strict Mode double-mounts effects in
@@ -196,6 +265,27 @@ export function SessionRoom({
       call.on('left-meeting', syncJoined);
       call.on('error', syncJoined);
 
+      // M4.9 Bug 1 BACKSTOP: even with listener-attached + post-join
+      // sync, the user reported the overlay still sticks intermittently.
+      // The strict-mode + React Compiler interaction can apparently
+      // swallow setState calls in narrow timing windows. Brute-force
+      // fix: poll meetingState every 500ms for the lifetime of this
+      // mount. The instant we observe `joined-meeting`, we set joined
+      // and stop polling. Cheap (one synchronous getter call per tick)
+      // and bulletproof. The interval is captured in a ref so cleanup
+      // can clear it; the cancelled flag is also a guard.
+      const pollInterval = setInterval(() => {
+        const ms = call.meetingState();
+        if (cancelled) {
+          clearInterval(pollInterval);
+          return;
+        }
+        if (ms === 'joined-meeting') {
+          setJoined(true);
+          clearInterval(pollInterval);
+        }
+      }, 500);
+      pollIntervalRef.current = pollInterval;
       call.on('joined-meeting', () => {
         if (cancelled) return;
         // Start realtime transcription. Requires the meeting token (passed
@@ -361,17 +451,34 @@ export function SessionRoom({
         setRemotePartyLeft(true);
       });
 
+      // Sync joined state from the call's CURRENT state immediately.
+      // If we're on the reuse path and the call already joined, this
+      // flips `joined` to true synchronously (no need to wait for an
+      // event that already fired before we attached). The Bug 1 race
+      // is finally closed.
+      const initialMs = call.meetingState();
+      if (initialMs === 'joined-meeting') {
+        setJoined(true);
+      }
+
+      // States where call.join() should NOT be re-invoked — the call
+      // is already in flight (reuse path) or already complete.
+      const joinInFlightStates = new Set(['loading', 'joining-meeting', 'joined-meeting']);
+      if (joinInFlightStates.has(initialMs)) {
+        // Listeners attached; the joined-meeting event will fire (if it
+        // hasn't already) and our syncJoined will catch it.
+        return;
+      }
+
       try {
         // Token is what grants the `canAdmin: 'transcription'` permission
         // needed for `startTranscription()` to actually start. Without it,
         // we still join the room — just without transcription.
         await call.join(roomToken ? { url: roomUrl, token: roomToken } : { url: roomUrl });
         // M4.9 Bug 1 fix: belt-and-suspenders sync after join resolves.
-        // If `joined-meeting` fired before our listener attached or React
-        // batched away our setState, this synchronous read of
-        // `meetingState()` flips `joined` to true so the overlay
-        // dismisses. join() resolves only after Daily reports the state
-        // is `joined-meeting`.
+        // join() resolves only after Daily reports the state is
+        // 'joined-meeting', so this synchronous check is the strongest
+        // signal we can read.
         syncJoined();
       } catch (err) {
         if (cancelled) return;
@@ -384,12 +491,30 @@ export function SessionRoom({
 
     return () => {
       cancelled = true;
-      const call = callRef.current;
+      // Stop the meetingState() polling backstop if it's still running.
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+      // M4.9 Bug 1 ROOT FIX: defer destroy 200ms. If a remount happens
+      // within that window (strict-mode), the new mount cancels this
+      // timeout (see the `pendingDestroyTimeout` clear at the top of
+      // this useEffect) and reuses the call. If it doesn't fire (real
+      // navigation), the destroy lands.
+      const callToDestroy = callRef.current;
       callRef.current = null;
-      if (call) {
-        void call.destroy().catch(() => {
-          /* swallow — best-effort teardown */
-        });
+      if (callToDestroy) {
+        if (pendingDestroyTimeout) {
+          // Shouldn't happen — would mean another cleanup ran without
+          // a remount picking up the previous timeout. Clear & overwrite.
+          clearTimeout(pendingDestroyTimeout);
+        }
+        pendingDestroyTimeout = setTimeout(() => {
+          pendingDestroyTimeout = null;
+          void callToDestroy.destroy().catch(() => {
+            /* swallow — best-effort teardown */
+          });
+        }, 200);
       }
     };
   }, [roomUrl, roomToken, sessionId, expertName]);
