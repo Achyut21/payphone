@@ -34,6 +34,8 @@
 
 import 'server-only';
 
+import { createHash } from 'node:crypto';
+
 import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 
 import { getCdp } from './cdp';
@@ -51,14 +53,38 @@ function getUsersTable(): string {
   return name;
 }
 
+/**
+ * Build a CDP-valid wallet name from a Cognito sub.
+ *
+ * Constraints (per CDP API):
+ *   - Alphanumeric + hyphens only
+ *   - Length 2..=36 characters
+ *
+ * Cognito subs are 36-char UUIDs. The natural `payphone-user-<sub>` is
+ * 50 chars, which CDP rejects with a 400. We instead hash the sub to
+ * 16 hex chars and prefix `payphone-`, producing a deterministic 25-
+ * character name (`payphone-` (9) + `[a-f0-9]{16}` (16)). Same sub
+ * always maps to the same name, so CDP's `getOrCreateAccount` stays
+ * idempotent.
+ *
+ * Collision math: 16 hex chars = 64 bits. Birthday-paradox collision
+ * at ~4 billion accounts. Way safer than we need at hackathon scale.
+ */
+function walletNameFor(cognito_sub: string): string {
+  const hash = createHash('sha256').update(cognito_sub).digest('hex').slice(0, 16);
+  return `payphone-${hash}`;
+}
+
 export type UserWalletRow = {
   /** Cognito `sub` — primary key. */
   cognito_sub: string;
   /** EVM address, lowercase 0x-prefixed (CDP's canonical format). */
   cdp_wallet_address: `0x${string}`;
   /**
-   * CDP account name. Default `payphone-user-<sub>` for new users; legacy
-   * `payphone-buyer` for the Achyut migration row.
+   * CDP account name. For new users, a deterministic 25-char name
+   * derived from `walletNameFor(cognito_sub)` (`payphone-` + 16 hex
+   * chars of SHA-256). The legacy `payphone-buyer` value is reserved
+   * for the Achyut migration row that points at the M0-funded wallet.
    */
   cdp_wallet_name: string;
   /** Unix ms. */
@@ -93,7 +119,7 @@ export async function getOrCreateUserWallet(cognito_sub: string): Promise<UserWa
   }
 
   // Lazy path: create CDP wallet first, then persist mapping.
-  const wallet_name = `payphone-user-${cognito_sub}`;
+  const wallet_name = walletNameFor(cognito_sub);
   const cdp = getCdp();
   const account = await cdp.evm.getOrCreateAccount({ name: wallet_name });
 

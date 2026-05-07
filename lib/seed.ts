@@ -15,10 +15,11 @@
  *
  * Per-second billing math is uniform across all experts: every session
  * settles for `floor(active_window_duration_sec) ×
- * M3_PER_SECOND_RATE_ATOMIC` = $0.01/sec ($0.60/min). Phase 5 of M5
- * harmonizes the per-card `displayRate` strings to match this so the
- * marketplace stops showing inflated `$2/min` / `$3/min` / `$4/min`
- * labels alongside an actual settle of $0.60/min.
+ * M3_PER_SECOND_RATE_ATOMIC` = $0.01/sec ($0.60/min). M5 Phase 5
+ * harmonized the per-card `displayRate` strings to all read `$0.60/min`
+ * — previously they varied (`$2/min`, `$3/min`, `$4/min`) which was
+ * marketing-flavor only but contradicted the actual on-chain settle a
+ * public user would see on BaseScan. Honest pricing > flavor.
  */
 
 export type DemoExpert = {
@@ -30,10 +31,19 @@ export type DemoExpert = {
   /** Lucide icon name; resolved in components/ExpertCard. */
   iconName: 'Code2' | 'Cpu' | 'Sparkles' | 'Cog';
   bio: string;
-  /** Marketing label like "$2/min". DOES NOT drive on-chain math (see header). */
+  /**
+   * Marketing label like `"$0.60/min"`. M5: harmonized across all
+   * experts to match the actual on-chain settle rate. Driving on-chain
+   * math from this field would require plumbing a per-session rate
+   * through the buyer signing context AND the webhook settle path —
+   * deferred per docs/STRETCH_GOALS.md.
+   */
   displayRate: string;
   avatarSeed: string;
 };
+
+/** Uniform display rate matching the actual on-chain settle math. */
+const HARMONIZED_RATE = '$0.60/min' as const;
 
 export const DEMO_EXPERTS: readonly DemoExpert[] = [
   {
@@ -42,7 +52,7 @@ export const DEMO_EXPERTS: readonly DemoExpert[] = [
     specialty: 'Solidity & smart contracts',
     iconName: 'Code2',
     bio: 'Audits and architecture for ERC-4337, Permit2, and L2 settlement flows. Ex-Optimism.',
-    displayRate: '$2/min',
+    displayRate: HARMONIZED_RATE,
     avatarSeed: 'expert-alice-chen',
   },
   {
@@ -51,7 +61,7 @@ export const DEMO_EXPERTS: readonly DemoExpert[] = [
     specialty: 'Rust & systems',
     iconName: 'Cpu',
     bio: 'Low-latency Rust services, lock-free data structures, embedded firmware. Available for protocol design.',
-    displayRate: '$3/min',
+    displayRate: HARMONIZED_RATE,
     avatarSeed: 'expert-marcus-rivera',
   },
   {
@@ -60,7 +70,7 @@ export const DEMO_EXPERTS: readonly DemoExpert[] = [
     specialty: 'UX & product',
     iconName: 'Sparkles',
     bio: 'Product strategy + interaction design for fintech and developer tools. 0→1 specialist.',
-    displayRate: '$2/min',
+    displayRate: HARMONIZED_RATE,
     avatarSeed: 'expert-priya-shah',
   },
   {
@@ -69,7 +79,7 @@ export const DEMO_EXPERTS: readonly DemoExpert[] = [
     specialty: 'DevOps & infra',
     iconName: 'Cog',
     bio: 'Kubernetes, Terraform, observability. Cuts cloud bills and on-call pain in half.',
-    displayRate: '$4/min',
+    displayRate: HARMONIZED_RATE,
     avatarSeed: 'expert-tomas-brandt',
   },
 ] as const;

@@ -43,10 +43,24 @@ export const X402_PROXY = '0x402085c248EeA27D92E8b30b2C58ed07f9E20001' as const;
 export const FACILITATOR_URL = 'https://api.cdp.coinbase.com/platform/v2/x402' as const;
 
 /**
- * Network selector. M1–M4 use Sepolia for safe iteration; M5 flips to mainnet
- * for the live demo. Flip exactly this constant; everything below derives.
+ * Network selector. M1–M4 used a hardcoded `'sepolia'`; M5 reads from
+ * the `NEXT_PUBLIC_ACTIVE_NETWORK` env var so the same code can serve
+ * Sepolia on Amplify and mainnet on the local laptop right before the
+ * stage demo. Defaults to `'sepolia'` for safety — a missing env var
+ * shouldn't accidentally route a $5 permit to mainnet.
+ *
+ * The `NEXT_PUBLIC_` prefix is mandatory: this constant is consumed by
+ * client components (e.g. the network badge in the navbar), so Next.js
+ * needs to inline the value at build time. Server-only `process.env`
+ * reads would return `undefined` in the browser bundle.
  */
-export const ACTIVE_NETWORK = 'sepolia' as const;
+function resolveActiveNetwork(): 'mainnet' | 'sepolia' {
+  const raw = process.env.NEXT_PUBLIC_ACTIVE_NETWORK;
+  if (raw === 'mainnet') return 'mainnet';
+  return 'sepolia';
+}
+
+export const ACTIVE_NETWORK = resolveActiveNetwork();
 
 export const ACTIVE_CHAIN_ID = CHAIN_ID[ACTIVE_NETWORK];
 export const ACTIVE_USDC_ADDRESS = USDC_ADDRESS[ACTIVE_NETWORK];

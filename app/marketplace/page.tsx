@@ -22,6 +22,7 @@ import { redirect } from 'next/navigation';
 
 import { ExpertCard } from '@/components/ExpertCard';
 import { AuroraBackground } from '@/components/ui/aurora-background';
+import { WalletPanel } from '@/components/WalletPanel';
 import { getCurrentUser } from '@/lib/auth';
 import { DEMO_EXPERTS } from '@/lib/seed';
 
@@ -51,6 +52,11 @@ export default async function MarketplacePage() {
             Authorize up to $5; pay only for the seconds you actually talk.
           </p>
         </header>
+
+        {/* Wallet panel — live USDC balance + faucet button when low.
+            Sits between the headline and the expert grid so users see
+            their funding state before clicking through to a session. */}
+        <WalletPanel />
 
         {/* 1 / 2 / 3 grid: at lg+ the four experts render as a 3-up
             row plus one solo below — feels intentional rather than

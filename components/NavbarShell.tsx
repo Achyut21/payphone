@@ -29,6 +29,7 @@ import { LogOut, Menu, PhoneCall, X } from 'lucide-react';
 
 import { logoutAction } from '@/app/_actions/auth';
 import { avatarUrl } from '@/lib/avatar';
+import { ACTIVE_NETWORK } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 import type { AppUser } from '@/lib/auth';
 
@@ -36,6 +37,38 @@ import type { AppUser } from '@/lib/auth';
 function emailHandle(email: string): string {
   const at = email.indexOf('@');
   return at > 0 ? email.slice(0, at) : email;
+}
+
+/**
+ * Tiny "Base Sepolia" / "Base Mainnet" pill rendered in the navbar.
+ * Reads `ACTIVE_NETWORK` (resolved from `NEXT_PUBLIC_ACTIVE_NETWORK` at
+ * build time) so it's correct in both dev and prod without any
+ * server round-trip. Color matches the network's role:
+ *   - Sepolia (testnet) → orange (signals "play money / testnet")
+ *   - Mainnet (live)    → success-green (signals "real settlement")
+ */
+function NetworkBadge() {
+  const isMainnet = ACTIVE_NETWORK === 'mainnet';
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide',
+        isMainnet
+          ? 'bg-payphone-success/15 text-payphone-success'
+          : 'bg-payphone-orange/15 text-payphone-orange',
+      )}
+      aria-label={`Active network: Base ${isMainnet ? 'Mainnet' : 'Sepolia'}`}
+    >
+      <span
+        className={cn(
+          'h-1.5 w-1.5 rounded-full',
+          isMainnet ? 'bg-payphone-success' : 'bg-payphone-orange',
+        )}
+        aria-hidden="true"
+      />
+      Base {isMainnet ? 'Mainnet' : 'Sepolia'}
+    </span>
+  );
 }
 
 type NavLink = { name: string; href: string; external?: boolean };
@@ -77,15 +110,21 @@ export function NavbarShell({ user }: { user: AppUser | null }) {
       aria-label="Primary"
     >
       <div className="flex items-center justify-between gap-3 rounded-full border border-payphone-border bg-payphone-surface/70 px-3 py-2 shadow-lg shadow-black/40 backdrop-blur-md md:px-4">
-        {/* Wordmark */}
-        <Link
-          href={homeHref}
-          className="flex shrink-0 items-center gap-2 rounded-full px-2 py-0.5 text-payphone-ink transition-colors hover:text-payphone-blue"
-          aria-label="PayPhone home"
-        >
-          <PhoneCall className="h-4 w-4 text-payphone-blue" aria-hidden="true" />
-          <span className="text-sm font-semibold tracking-tight md:text-base">PayPhone</span>
-        </Link>
+        {/* Wordmark + network badge */}
+        <div className="flex shrink-0 items-center gap-2">
+          <Link
+            href={homeHref}
+            className="flex items-center gap-2 rounded-full px-2 py-0.5 text-payphone-ink transition-colors hover:text-payphone-blue"
+            aria-label="PayPhone home"
+          >
+            <PhoneCall className="h-4 w-4 text-payphone-blue" aria-hidden="true" />
+            <span className="text-sm font-semibold tracking-tight md:text-base">PayPhone</span>
+          </Link>
+          {/* Hidden on the smallest screens — the mobile drawer surfaces it. */}
+          <span className="hidden sm:inline-flex">
+            <NetworkBadge />
+          </span>
+        </div>
 
         {/* Desktop nav links (centered) */}
         <div className="hidden items-center gap-1 md:flex">
@@ -220,6 +259,11 @@ function MobileDrawer({
           transition={{ duration: 0.18, ease: 'easeOut' }}
           className="mt-2 overflow-hidden rounded-2xl border border-payphone-border bg-payphone-surface/90 p-2 shadow-xl shadow-black/40 backdrop-blur-md md:hidden"
         >
+          {/* Network badge surfaced in the drawer for the smallest viewports
+              where it's hidden in the navbar header. */}
+          <div className="mb-1 flex justify-end px-3 pt-1 sm:hidden">
+            <NetworkBadge />
+          </div>
           <nav className="flex flex-col gap-1">
             {links.map((link) =>
               link.external ? (
