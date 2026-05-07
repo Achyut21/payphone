@@ -121,6 +121,40 @@ type TranscriptLine = {
 // per-component-instance ref wouldn't survive Mount 1's cleanup.
 let pendingDestroyTimeout: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Stringify an unknown error into a human-readable message.
+ *
+ * Daily's call.join() can reject with a plain object of shape
+ * `{ errorMsg, error: { type, msg } }` rather than an Error instance.
+ * `String(plainObject)` returns "[object Object]" — useless to the
+ * user. This helper digs through the common shapes (Error, Daily's
+ * error object, generic object with .message, etc.) and returns the
+ * best label it can find.
+ *
+ * Examples of inputs we expect to see:
+ *   - new Error('whatever')                    → 'whatever'
+ *   - { errorMsg: 'The meeting is full' }      → 'The meeting is full'
+ *   - { error: { msg: 'invalid token' } }      → 'invalid token'
+ *   - 'plain string'                           → 'plain string'
+ *   - undefined / null                         → 'unknown error'
+ */
+function readableError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  if (err && typeof err === 'object') {
+    const e = err as Record<string, unknown>;
+    if (typeof e.errorMsg === 'string') return e.errorMsg;
+    if (typeof e.message === 'string') return e.message;
+    if (e.error && typeof e.error === 'object') {
+      const inner = e.error as Record<string, unknown>;
+      if (typeof inner.msg === 'string') return inner.msg;
+      if (typeof inner.message === 'string') return inner.message;
+      if (typeof inner.type === 'string') return inner.type;
+    }
+  }
+  return 'unknown error';
+}
+
 export function SessionRoom({
   sessionId,
   roomUrl,
@@ -411,8 +445,7 @@ export function SessionRoom({
 
       call.on('error', (event) => {
         if (cancelled) return;
-        const msg = event && 'errorMsg' in event ? String(event.errorMsg) : 'Daily error';
-        setError(msg);
+        setError(readableError(event));
       });
 
       // Freeze the ticker the instant Daily confirms the local participant
@@ -482,8 +515,7 @@ export function SessionRoom({
         syncJoined();
       } catch (err) {
         if (cancelled) return;
-        const msg = err instanceof Error ? err.message : String(err);
-        setError(`join failed: ${msg}`);
+        setError(`join failed: ${readableError(err)}`);
       }
     };
 
