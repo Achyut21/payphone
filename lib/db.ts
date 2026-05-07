@@ -483,6 +483,40 @@ export async function markSessionFailed(
 }
 
 /**
+ * Retry-success path: SETTLE_FAILED -> COMPLETED. Used by the manual
+ * retry endpoint (`POST /api/sessions/[id]/retry-settle`) when the
+ * buyer hits "Retry settlement" on the recap after the initial settle
+ * exhausted retries. Conditional on `#status = SETTLE_FAILED` so a
+ * duplicate click can't double-write.
+ *
+ * Kept SEPARATE from `markSessionCompleted` (which only allows
+ * AUTHORIZED/ACTIVE) so the normal-flow conditional stays narrow —
+ * broadening that set could mask a real "settle fired on a row in the
+ * wrong state" bug.
+ */
+export async function markSessionRetrySettled(
+  sessionId: string,
+  fields: { settled_amount: number; settle_tx_hash: string },
+): Promise<void> {
+  const tableName = process.env.DYNAMODB_TABLE_NAME!;
+  await getDoc().send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { session_id: sessionId },
+      UpdateExpression: 'SET #status = :completed, settled_amount = :amt, settle_tx_hash = :hash',
+      ConditionExpression: '#status = :failed',
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: {
+        ':completed': 'COMPLETED' satisfies SessionStatus,
+        ':failed': 'SETTLE_FAILED' satisfies SessionStatus,
+        ':amt': fields.settled_amount,
+        ':hash': fields.settle_tx_hash,
+      },
+    }),
+  );
+}
+
+/**
  * Append one utterance to a session's `transcript` (M4). Daily fires a
  * `transcription.message` event per utterance; we accumulate them into a
  * DDB List of strings. Reads (`getSession().transcript`) come back as

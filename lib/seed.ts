@@ -1,7 +1,7 @@
 /**
  * PayPhone — seeded demo data.
  *
- * Three demo "users" (login as Alice/Bob/Charlie) and four "experts" (the
+ * Three demo "users" (login as Achyut/Bob/Charlie) and four "experts" (the
  * marketplace cards). No DB, no admin panel — these are hardcoded values.
  *
  * Per-second billing math is uniform across all experts in M4: every
@@ -46,10 +46,14 @@ export type DemoExpert = {
 
 export const DEMO_USERS: readonly DemoUser[] = [
   {
+    // M4.9: renamed display name from "Alice" to "Achyut" so the buyer
+    // doesn't visually collide with expert "Alice Chen" during demos.
+    // The `id` stays "alice" so existing auth cookies / DDB rows
+    // continue to resolve — the rename is purely cosmetic.
     id: 'alice',
-    name: 'Alice',
-    avatarSeed: 'alice-payphone',
-    tagline: 'Web3 founder · power user',
+    name: 'Achyut',
+    avatarSeed: 'achyut-payphone',
+    tagline: 'Hackathon builder · power user',
   },
   { id: 'bob', name: 'Bob', avatarSeed: 'bob-payphone', tagline: 'Solidity dev · day-trader' },
   {

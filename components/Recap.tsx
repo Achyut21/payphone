@@ -169,6 +169,7 @@ export function Recap({
 
       {/* ─── 1. Settle status header card ─── */}
       <SettleStatusCard
+        sessionId={sessionId}
         expertName={expertName}
         expertSpecialty={expertSpecialty}
         settledUsd={settledUsd}
@@ -296,6 +297,7 @@ export function Recap({
  * matching /docs and the landing's last-call widget.
  */
 function SettleStatusCard({
+  sessionId,
   expertName,
   expertSpecialty,
   settledUsd,
@@ -303,6 +305,7 @@ function SettleStatusCard({
   settleTxUrl,
   settleFailed,
 }: {
+  sessionId: string;
   expertName: string;
   expertSpecialty: string;
   settledUsd: string;
@@ -310,6 +313,39 @@ function SettleStatusCard({
   settleTxUrl: string | null;
   settleFailed: boolean;
 }) {
+  // M4.9 retry-settle UX. Hits POST /api/sessions/[id]/retry-settle
+  // and reloads on success so the page re-renders as COMPLETED. Stays
+  // on the failed view + surfaces the error on retry-also-failed.
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  const handleRetry = async () => {
+    if (retrying) return;
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/retry-settle`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          detail?: string;
+        };
+        setRetryError(body.detail || body.error || `HTTP ${res.status}`);
+        return;
+      }
+      // Success — server flipped status to COMPLETED. Reload so the
+      // page re-renders the success state with the new tx hash.
+      window.location.reload();
+    } catch (err) {
+      setRetryError(err instanceof Error ? err.message : 'network error');
+    } finally {
+      setRetrying(false);
+    }
+  };
+
   return (
     <section className="flex flex-col gap-5 rounded-2xl border border-payphone-border bg-payphone-surface p-6 md:p-8">
       {/* Status badge — green (settled) or orange (failed). */}
@@ -353,6 +389,41 @@ function SettleStatusCard({
           {expertSpecialty}
         </span>
       </div>
+
+      {/* M4.9: settle-failed retry block. Shown only when settleFailed.
+          Explains what happened, offers manual retry, surfaces the
+          error if retry ALSO fails. */}
+      {settleFailed && (
+        <div className="flex flex-col gap-3 rounded-lg border border-payphone-orange/40 bg-payphone-orange/5 p-4">
+          <p className="text-sm leading-relaxed text-payphone-ink-muted">
+            The on-chain settlement attempt didn&apos;t go through. Your authorization is still
+            valid — try again, or contact support if it keeps failing.
+          </p>
+          <button
+            type="button"
+            onClick={handleRetry}
+            disabled={retrying}
+            className="inline-flex w-fit items-center gap-2 rounded-lg bg-payphone-orange px-4 py-2 text-sm font-semibold text-payphone-ink shadow-md shadow-payphone-orange/20 transition-all hover:bg-payphone-orange/90 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {retrying ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                Retrying…
+              </>
+            ) : (
+              <>
+                <TriangleAlert className="h-3.5 w-3.5" aria-hidden="true" />
+                Retry settlement
+              </>
+            )}
+          </button>
+          {retryError && (
+            <p className="text-xs leading-relaxed text-payphone-orange">
+              Retry failed: {retryError}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* BaseScan link. Sits in its own row so it's always tappable on
           mobile (avoiding the "tap target swallowed by neighbor" issue). */}
