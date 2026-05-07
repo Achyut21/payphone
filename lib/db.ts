@@ -13,6 +13,14 @@
  * Credentials flow through process.env via the AWS SDK's default provider
  * chain — we never read `.env.local` directly. The runtime IAM user
  * `payphone-app` (Terraform-managed) only has DDB CRUD on this one table.
+ *
+ * M5 / Amplify: AWS Amplify Hosting reserves the `AWS_*` env-var prefix
+ * for its own internal use and refuses to let us set `AWS_REGION`,
+ * `AWS_ACCESS_KEY_ID`, or `AWS_SECRET_ACCESS_KEY` on a hosted app. So
+ * we read either the standard names (local dev / .env.local) OR the
+ * `APP_AWS_*` aliases (Amplify-hosted). The lookup prefers `APP_AWS_*`
+ * when present so a future move to Lambda execution roles only requires
+ * deleting the `APP_AWS_*` entries from Amplify (not editing this file).
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -26,19 +34,39 @@ import {
 
 import type { ParticipantEvent } from '@/lib/billing';
 
-const REQUIRED_DDB_ENV_VARS = [
-  'AWS_REGION',
-  'DYNAMODB_TABLE_NAME',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-] as const;
+/**
+ * Resolve AWS credentials + region from process.env, preferring the
+ * Amplify-safe `APP_AWS_*` prefix and falling back to the standard
+ * names. Returns nulls for missing fields so the caller can decide
+ * whether absent credentials are a hard error (we use them for DDB,
+ * which is mandatory) or a soft fall-through (e.g. the Lambda role's
+ * default chain — not what we want here, but legal).
+ */
+function resolveAwsConfig(): {
+  region: string | null;
+  accessKeyId: string | null;
+  secretAccessKey: string | null;
+} {
+  return {
+    region: process.env.APP_AWS_REGION ?? process.env.AWS_REGION ?? null,
+    accessKeyId: process.env.APP_AWS_ACCESS_KEY_ID ?? process.env.AWS_ACCESS_KEY_ID ?? null,
+    secretAccessKey:
+      process.env.APP_AWS_SECRET_ACCESS_KEY ?? process.env.AWS_SECRET_ACCESS_KEY ?? null,
+  };
+}
 
 function assertDdbEnv(): void {
-  const missing = REQUIRED_DDB_ENV_VARS.filter((key) => !process.env[key]);
+  const cfg = resolveAwsConfig();
+  const missing: string[] = [];
+  if (!cfg.region) missing.push('AWS_REGION (or APP_AWS_REGION)');
+  if (!cfg.accessKeyId) missing.push('AWS_ACCESS_KEY_ID (or APP_AWS_ACCESS_KEY_ID)');
+  if (!cfg.secretAccessKey) missing.push('AWS_SECRET_ACCESS_KEY (or APP_AWS_SECRET_ACCESS_KEY)');
+  if (!process.env.DYNAMODB_TABLE_NAME) missing.push('DYNAMODB_TABLE_NAME');
   if (missing.length > 0) {
     throw new Error(
       `AWS DynamoDB env vars missing: ${missing.join(', ')}. ` +
-        `Run \`terraform output\` from infra/terraform and append values to .env.local.`,
+        `Run \`terraform output\` from infra/terraform and append values to .env.local ` +
+        `(or set them in Amplify with the APP_AWS_* aliases).`,
     );
   }
 }
@@ -46,11 +74,11 @@ function assertDdbEnv(): void {
 let _doc: DynamoDBDocumentClient | null = null;
 
 /**
- * Returns a singleton DocumentClient. The default credential provider chain
- * picks up AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from process.env, which
- * the SDK prefers over `~/.aws/credentials`. That's how we keep the
- * Terraform bootstrap creds (admin, in `~/.aws/credentials`) separate from
- * the runtime app creds (DDB-only, in .env.local).
+ * Returns a singleton DocumentClient. Credentials and region are
+ * resolved from `APP_AWS_*` (Amplify) or `AWS_*` (local dev) and
+ * passed to the SDK explicitly — relying on the SDK's default chain
+ * would break under Amplify because the standard `AWS_*` names there
+ * are reserved.
  *
  * Exported (M5) so sibling modules like `lib/user-wallet.ts` reuse the
  * same client. Direct callers should still prefer the typed helpers in
@@ -60,7 +88,15 @@ let _doc: DynamoDBDocumentClient | null = null;
 export function getDoc(): DynamoDBDocumentClient {
   if (_doc === null) {
     assertDdbEnv();
-    const ddb = new DynamoDBClient({ region: process.env.AWS_REGION });
+    const cfg = resolveAwsConfig();
+    const ddb = new DynamoDBClient({
+      // Both fields are non-null after assertDdbEnv passed.
+      region: cfg.region as string,
+      credentials: {
+        accessKeyId: cfg.accessKeyId as string,
+        secretAccessKey: cfg.secretAccessKey as string,
+      },
+    });
     _doc = DynamoDBDocumentClient.from(ddb, {
       // Allow optional fields on SessionRow to be set to undefined and just
       // omitted from the persisted item rather than rejected with an error.
