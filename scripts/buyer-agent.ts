@@ -15,11 +15,20 @@
  *
  * Usage:
  *   pnpm tsx scripts/buyer-agent.ts              # uses defaults below
- *   pnpm tsx scripts/buyer-agent.ts <userId>     # override user
- *   pnpm tsx scripts/buyer-agent.ts <userId> <expertId> [topic]
+ *   pnpm tsx scripts/buyer-agent.ts <expertId>   # override expert
+ *   pnpm tsx scripts/buyer-agent.ts <expertId> [topic]
  *
- * Defaults match real seeded ids so the resulting DDB row is consistent
- * with what the M4 UI would produce.
+ * M5 change: the CLI uses the SHARED dev wallet (`getBuyerAccount`,
+ * which resolves to the M0-funded `0xE01669…0d870` wallet) instead of
+ * looking up a per-user wallet from DDB. Reasons:
+ *   - The CLI doesn't have a Cognito session, so there's no `cognito_sub`
+ *     to key the per-user lookup off of.
+ *   - The shared dev wallet is the one with funds on Sepolia / mainnet,
+ *     which is what diagnostics actually need.
+ *   - The persisted DDB row's `user_id` is set to a sentinel
+ *     (`cli-diagnostic`) so it's distinguishable from real user sessions
+ *     and won't be returned by Phase 6's ownership-gated APIs (no
+ *     authenticated user has that as their cognito_sub).
  */
 
 import dotenv from 'dotenv';
@@ -27,24 +36,38 @@ import dotenv from 'dotenv';
 // Imports are side-effect-free re: env (lib reads env inside function bodies).
 dotenv.config({ path: '.env.local' });
 
-import { requestSession } from '../lib/agent';
+import { requestSession, type AgentBuyer } from '../lib/agent';
+import { getBuyerAccount } from '../lib/cdp';
 import { ACTIVE_CAIP2, ACTIVE_NETWORK } from '../lib/constants';
 
-const DEFAULT_USER_ID = 'alice';
 const DEFAULT_EXPERT_ID = 'expert-alice-chen';
 const DEFAULT_TOPIC = 'CLI diagnostic call';
+/** Sentinel user id stamped on CLI-created session rows. */
+const CLI_USER_ID = 'cli-diagnostic';
 
 async function main(): Promise<void> {
-  const userId = process.argv[2] ?? DEFAULT_USER_ID;
-  const expertId = process.argv[3] ?? DEFAULT_EXPERT_ID;
-  const topic = process.argv[4] ?? DEFAULT_TOPIC;
+  const expertId = process.argv[2] ?? DEFAULT_EXPERT_ID;
+  const topic = process.argv[3] ?? DEFAULT_TOPIC;
 
   console.log(`[buyer-agent] network: ${ACTIVE_NETWORK} (${ACTIVE_CAIP2})`);
-  console.log(`[buyer-agent] user=${userId} expert=${expertId}`);
+  console.log(`[buyer-agent] user=${CLI_USER_ID} (CLI; uses shared dev wallet)`);
+  console.log(`[buyer-agent] expert=${expertId}`);
   console.log(`[buyer-agent] topic="${topic}"`);
+
+  const sharedBuyer = await getBuyerAccount();
+  console.log(`[buyer-agent] buyer wallet: ${sharedBuyer.address} (shared dev)`);
   console.log(`[buyer-agent] running x402 round-trip…`);
 
-  const result = await requestSession({ topic, userId, expertId });
+  // The CLI's `buyer` override skips the per-user wallet lookup entirely.
+  // CDP's signTypedData has a wider param shape than the AgentBuyer
+  // interface needs; cast at the boundary so the CLI stays type-clean.
+  const buyer: AgentBuyer = {
+    address: sharedBuyer.address,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    signTypedData: (params) => sharedBuyer.signTypedData(params as any),
+  };
+
+  const result = await requestSession({ topic, userId: CLI_USER_ID, expertId, buyer });
 
   console.log(`[buyer-agent] HTTP 200 OK`);
   console.log(`[buyer-agent]   sessionId:     ${result.sessionId}`);

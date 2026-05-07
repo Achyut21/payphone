@@ -17,7 +17,10 @@ data "aws_iam_policy_document" "ddb_access" {
       "dynamodb:DeleteItem",
       "dynamodb:Scan"
     ]
-    resources = [aws_dynamodb_table.sessions.arn]
+    resources = [
+      aws_dynamodb_table.sessions.arn,
+      aws_dynamodb_table.users.arn,
+    ]
   }
 }
 

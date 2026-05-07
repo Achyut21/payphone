@@ -37,13 +37,32 @@ import type { ClientEvmSigner } from '@x402/evm';
 import { UptoEvmScheme } from '@x402/evm/upto/client';
 import { wrapFetchWithPayment, x402Client } from '@x402/fetch';
 
-import { getBuyerAccount } from '@/lib/cdp';
 import { ACTIVE_CAIP2, ACTIVE_PUBLIC_RPC_URL } from '@/lib/constants';
+import { getUserBuyerAccount } from '@/lib/user-wallet';
+
+/**
+ * Minimal CDP-account shape needed to sign the upto witness. Both
+ * `getBuyerAccount` (shared dev wallet, used by the diagnostic CLI) and
+ * `getUserBuyerAccount` (per-user wallet, used by the marketplace flow)
+ * return objects with this surface, so the agent can accept either.
+ */
+export type AgentBuyer = {
+  address: string;
+  signTypedData: (params: unknown) => Promise<string>;
+};
 
 export type RequestSessionInput = {
   /** Free-text topic; persisted on the row, surfaced into the recap LLM context. */
   topic: string;
-  /** Seeded user id (must match `lib/seed.ts.DEMO_USERS`). */
+  /**
+   * The buyer's identity for persistence purposes (stored as `user_id` on
+   * the DDB session row). Post-M5 this is a Cognito `sub` for app traffic
+   * and a sentinel like `cli-diagnostic` for the CLI.
+   *
+   * If `buyer` is omitted, the agent looks up the user's CDP wallet via
+   * `getUserBuyerAccount(userId)`, so for app traffic this MUST be the
+   * Cognito sub.
+   */
   userId: string;
   /** Seeded expert id (must match `lib/seed.ts.DEMO_EXPERTS`). */
   expertId: string;
@@ -53,6 +72,13 @@ export type RequestSessionInput = {
    * for local dev. Tests can override per-call.
    */
   baseUrl?: string;
+  /**
+   * Override the buyer's CDP account. When absent, the agent resolves it
+   * from `userId` via `getUserBuyerAccount`. The CLI passes its own
+   * (shared dev wallet) account here so it doesn't need a real Cognito
+   * sub or a DDB user row to run a diagnostic round-trip.
+   */
+  buyer?: AgentBuyer;
 };
 
 export type RequestSessionResult = {
@@ -75,7 +101,11 @@ export type RequestSessionResult = {
 export async function requestSession(input: RequestSessionInput): Promise<RequestSessionResult> {
   const baseUrl = input.baseUrl ?? process.env.INTERNAL_API_URL ?? 'http://localhost:3000';
 
-  const buyer = await getBuyerAccount();
+  // Resolve the buyer wallet. App traffic flows through getUserBuyerAccount,
+  // which looks up the user's row in the payphone-users table (lazy-creating
+  // the CDP wallet on first attempt). The CLI / scripts pass their own
+  // pre-resolved wallet via `input.buyer` to skip the per-user lookup.
+  const buyer = input.buyer ?? (await getUserBuyerAccount(input.userId));
 
   // Adapter: CDP exposes a viem-compatible signTypedData; UptoEvmScheme
   // backfills readContract / getTransactionCount via the rpcUrl option.

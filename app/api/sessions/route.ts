@@ -61,11 +61,18 @@ const SESSION_ROW_TTL_SECONDS = 24 * 60 * 60;
 /**
  * Request body schema. All fields optional — the M3 CLI sent only `topic`,
  * which the route ignored. M4 adds `userId`/`expertId` so the marketplace
- * can persist who initiated the call and which expert was picked. We
- * keep the M3 shape backward-compatible by falling back to sentinel
- * values when fields are missing (so rerunning the M3 CLI still works
- * for diagnostic purposes — the persisted row will just have
- * `seed-buyer` / `seed-expert`).
+ * can persist who initiated the call and which expert was picked.
+ *
+ * M5 semantic change: `userId` is now the Cognito `sub` (set by the
+ * `startSession` server action from `getCurrentUser().id`) for app
+ * traffic, or the sentinel `cli-diagnostic` from the CLI. The route
+ * itself is auth-free — the server action is the auth boundary, since
+ * the loopback fetch from `lib/agent.ts` doesn't carry browser cookies.
+ * Phase 6 adds ownership guards on the read-side `/api/sessions/[id]/*`
+ * routes which ARE called from the browser with cookies.
+ *
+ * The M3-CLI sentinel (`seed-buyer`) is kept as the fallback for body-
+ * less requests so legacy diagnostic flows continue to work.
  */
 const SessionRequestBodySchema = z.object({
   topic: z.string().optional(),

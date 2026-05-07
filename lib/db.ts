@@ -51,8 +51,13 @@ let _doc: DynamoDBDocumentClient | null = null;
  * the SDK prefers over `~/.aws/credentials`. That's how we keep the
  * Terraform bootstrap creds (admin, in `~/.aws/credentials`) separate from
  * the runtime app creds (DDB-only, in .env.local).
+ *
+ * Exported (M5) so sibling modules like `lib/user-wallet.ts` reuse the
+ * same client. Direct callers should still prefer the typed helpers in
+ * this file (createSession, getSession, etc.) — `getDoc` is for tables
+ * outside the sessions schema (e.g. payphone-users).
  */
-function getDoc(): DynamoDBDocumentClient {
+export function getDoc(): DynamoDBDocumentClient {
   if (_doc === null) {
     assertDdbEnv();
     const ddb = new DynamoDBClient({ region: process.env.AWS_REGION });
