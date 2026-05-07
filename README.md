@@ -27,6 +27,7 @@ The pitch in three lines:
 | **M4.5**  | UI/UX overhaul: dark mode landing + navbar + polish           | ✅ done (May 6)   |
 | **M4.9**  | Bug fixes + active-window billing architectural fix           | ✅ done (May 7)   |
 | **M5**    | Per-user Cognito auth + per-user CDP wallets + Amplify deploy | ✅ done (May 7)   |
+| **M5.5**  | AI expert suggester + backup recap fallback + favicon         | ✅ done (May 7)   |
 | M6        | Mainnet flip + on-stage live demo                             | next              |
 
 ### M1 proof
@@ -406,6 +407,76 @@ was navigated to the recap with a working BaseScan link. The whole rail
 works end-to-end on production with real Cognito users + per-user wallets
 
 - real Daily webhooks + real on-chain settle.
+
+### M5.5 proof
+
+Three small stretch-goal additions on top of the M5 production deployment, landing
+demo-day morning. **Committed as a single combined commit (`feat(m5.5): ai expert
+suggester + backup recap fallback + favicon`, hash `836128a`) per explicit user
+direction** — CONTEXT.md's commit-per-phase cadence rule was overridden for this
+milestone only, not abandoned. Future milestones revert to the per-phase cadence.
+
+**AI expert suggester** (`docs/STRETCH_GOALS.md` #2). A free-form chat input
+above the marketplace expert grid. The user types what they need help with
+("I'm stuck on a gas optimization issue in my Solidity contract") and Haiku 4.5
+picks the single best-matching seeded expert. New `app/api/experts/suggest/route.ts`
+POST endpoint, NextAuth-gated via `getCurrentUser()`. Calls `@anthropic-ai/sdk`
+directly (rather than the Vercel AI SDK we use for the recap stream — this is a
+one-shot non-streaming JSON response, `streamText` would be overkill). The system
+prompt embeds the four `DEMO_EXPERTS` ids/specialties/bios at request time so it
+stays in sync with `lib/seed.ts`; the response is parsed as strict JSON
+`{expertId, reason}`, accidental code fences are stripped, and the returned
+`expertId` is validated against the seed list before responding (defends against
+hallucinated ids). Failures surface as 502 with a generic `error` field; the
+client falls back to "pick from the list below". UX: new
+`components/ExpertSuggester.tsx` (Sparkles icon, payphone-blue submit button,
+Loader2 spinner during pending, `useTransition`, orange-tinted error fallback).
+New `components/MarketplaceClient.tsx` is a thin client wrapper that holds
+`{expertId, reason}` state and threads `isSuggested` / `suggestedReason` into
+each card. `components/ExpertCard.tsx` was converted from a Server to a Client
+Component (server actions called via `<form action={startSession}>` work fine
+from Client Components in Next 16); when matched, the card border tints
+payphone-orange, a "Suggested" badge with the model's reason renders next to
+the expert name, and a `useEffect` + `requestAnimationFrame` defers
+`scrollIntoView({ behavior: 'smooth', block: 'center' })` until after the badge
+renders (prevents a janky frame where mobile scrolls before the badge mounts).
+
+**Backup recap fallback.** When the recap loads and the session's transcript is
+empty or under 50 characters (e.g. the user hung up before the second tab joined,
+or Daily transcription flaked on stage WiFi), `lib/haiku.ts` now switches
+`summarize()` to a fallback prompt that generates a coherent recap from the
+expert's specialty + call duration alone — framed as "what an expert in this
+domain typically helps with" rather than "we have no transcript". The streaming
+shape, return type, and `useCompletion`-style client renderer in
+`components/Recap.tsx` are unchanged — only the system prompt and user-message
+body branch on `transcriptText.trim().length < MIN_TRANSCRIPT_CHARS`. New
+constants: `MIN_TRANSCRIPT_CHARS = 50` (empirically picked: a single "hello" is
+~5–7 chars after our `[hh:mm:ss] speaker:` prefix, so anything under 50 has
+effectively no substance for Haiku to summarize). The fallback prompt produces
+a different four-section structure (Brief call recap / What [Expert] typically
+helps with / Suggested next steps) — the recap UI renders raw markdown via
+markdown-it, so any heading shape works. `app/api/sessions/[id]/recap/route.ts`
+was extended to pass `expertSpecialty` (falls back to `'general consulting'`
+for legacy rows that predate `expert_id` tracking) and `durationSec` (falls
+back to `0`) into `summarize()`.
+
+**Favicon.** New PayPhone favicon (15406-byte ICO) replaces the previous
+25931-byte placeholder at `app/favicon.ico`. Next.js 16 App Router serves
+favicons from this canonical path automatically.
+
+**End-to-end verification.** User signed in as Achyut on `localhost:3000`,
+confirmed the new favicon visible in the browser tab, typed a free-form query
+into the suggester, watched the marketplace scroll to the matching card with
+the "Suggested" badge + reason, clicked "Talk to ..." → started a session →
+hung up immediately before the second tab joined (empty transcript), landed
+on `/session/<id>/recap` and watched the fallback summary stream in coherently
+with the expert's specialty + duration. The settled amount + BaseScan link
+rendered correctly even on the empty-transcript path. All three additions
+verified working end-to-end before the commit landed.
+
+**Build/lint/test hygiene.** `pnpm format && pnpm lint && pnpm build && pnpm test`
+clean before the commit. Production build registers 19 routes (M5 had 18; +1
+for `/api/experts/suggest`). 8/8 active-window unit tests still pass.
 
 ## Stack
 
