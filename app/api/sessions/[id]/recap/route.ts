@@ -42,11 +42,20 @@ export async function GET(
   // the expert's specialty so the LLM has a hook. M5 may store the
   // user's typed topic if we ever add a topic input box.
   const topic = expert?.specialty ?? 'PayPhone session';
+  // M5.5: explicit specialty + duration are passed through to the
+  // backup recap fallback. `summarize()` switches prompts when the
+  // transcript is empty or sub-50-chars and uses these to generate a
+  // coherent fallback recap. For sessions that predate `expert_id`
+  // tracking, fall back to a generic specialty string.
+  const expertSpecialty = expert?.specialty ?? 'general consulting';
+  const durationSec = session.duration_sec ?? 0;
 
   const result = summarize({
     transcript: session.transcript,
     topic,
     expertName,
+    expertSpecialty,
+    durationSec,
   });
 
   // Plain text stream — the client uses `useCompletion` which speaks the

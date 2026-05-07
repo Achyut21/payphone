@@ -20,8 +20,8 @@
 
 import { redirect } from 'next/navigation';
 
-import { ExpertCard } from '@/components/ExpertCard';
 import { AuroraBackground } from '@/components/ui/aurora-background';
+import { MarketplaceClient } from '@/components/MarketplaceClient';
 import { WalletPanel } from '@/components/WalletPanel';
 import { getCurrentUser } from '@/lib/auth';
 import { DEMO_EXPERTS } from '@/lib/seed';
@@ -58,14 +58,11 @@ export default async function MarketplacePage() {
             their funding state before clicking through to a session. */}
         <WalletPanel />
 
-        {/* 1 / 2 / 3 grid: at lg+ the four experts render as a 3-up
-            row plus one solo below — feels intentional rather than
-            half-empty. */}
-        <section className="grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-6 lg:grid-cols-3">
-          {DEMO_EXPERTS.map((expert) => (
-            <ExpertCard key={expert.id} expert={expert} />
-          ))}
-        </section>
+        {/* M5.5: client wrapper holds the AI-suggester state. The
+            suggester input mounts above the grid; on submit it picks
+            one of the seeded experts and the matching ExpertCard
+            renders a "Suggested" badge + scrolls itself into view. */}
+        <MarketplaceClient experts={DEMO_EXPERTS} />
       </main>
     </AuroraBackground>
   );

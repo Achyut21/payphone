@@ -60,6 +60,47 @@ Rules:
 - Keep the whole summary under ~250 words.`;
 
 /**
+ * Threshold below which we switch to the fallback prompt. The 50-char
+ * floor catches calls where transcription never activated (empty
+ * `transcript` array) AND calls where it activated but only logged a
+ * sub-second utterance before someone hung up. Picked empirically: a
+ * single "hello" lands around 5–7 characters in our `[hh:mm:ss] speaker:`
+ * prefix-stripped form, so anything under 50 has effectively no
+ * substance for Haiku to summarize.
+ */
+const MIN_TRANSCRIPT_CHARS = 50;
+
+/**
+ * Backup system prompt used when the transcript is empty or too short
+ * to summarize honestly. Generates a coherent recap from the expert's
+ * specialty alone, framed as "what an expert in this domain typically
+ * helps with" rather than "we have no transcript". Keeps the demo
+ * coherent if Daily transcription flakes on stage WiFi (or if the
+ * user hangs up before the second tab joins).
+ *
+ * The four-heading shape is DIFFERENT from `SUMMARY_SYSTEM` (Topic /
+ * Key points / Action items / Open questions makes no sense without a
+ * transcript). The recap UI renders raw markdown via markdown-it so
+ * any structure works; only the words change.
+ */
+const FALLBACK_SUMMARY_SYSTEM = (expertName: string) =>
+  `You are writing a brief recap of a video call that had no captured transcript (the call was very short or transcription didn't activate).
+
+Generate a coherent fallback recap based on the expert's specialty alone. Be honest that the call was brief but don't mention "no transcript" or "transcription failed" — just describe what an expert in this domain typically helps with.
+
+Format as markdown with these sections:
+## Brief call recap
+A 1-2 sentence note that the call was brief.
+
+## What ${expertName} typically helps with
+3-4 bullet points covering the expert's specialty area.
+
+## Suggested next steps
+2 short bullet points encouraging the user to reach back out.
+
+Keep the tone warm and helpful, not apologetic. Strict markdown only — no preamble, no closing line.`;
+
+/**
  * System prompt for the follow-up chat. The transcript is pinned in the
  * system message so every turn has it in context — the user doesn't
  * need to paste it repeatedly. The model is told to anchor every claim
@@ -96,26 +137,48 @@ function joinTranscript(lines: readonly string[] | undefined): string {
  * — the route handler calls `.toTextStreamResponse()` to convert to a Web
  * Response with a streaming body. The `useCompletion` hook on the client
  * reads the stream chunk-by-chunk.
+ *
+ * M5.5 — backup recap fallback: when the transcript is empty or under
+ * `MIN_TRANSCRIPT_CHARS`, swap to `FALLBACK_SUMMARY_SYSTEM` and feed
+ * Haiku the expert's specialty + call duration instead of asking it
+ * to summarize a non-transcript. The streaming shape and return type
+ * are identical, so the route handler and client renderer are
+ * unchanged. This keeps the demo coherent if Daily transcription
+ * flakes on stage WiFi (or if the user hangs up before the second
+ * tab joins).
  */
 export function summarize({
   transcript,
   topic,
   expertName,
+  expertSpecialty,
+  durationSec,
 }: {
   transcript: readonly string[] | undefined;
   topic: string;
   expertName: string;
+  expertSpecialty: string;
+  durationSec: number;
 }) {
   const transcriptText = joinTranscript(transcript);
+  const isMinimal = transcriptText.trim().length < MIN_TRANSCRIPT_CHARS;
+
+  const system = isMinimal ? FALLBACK_SUMMARY_SYSTEM(expertName) : SUMMARY_SYSTEM;
+  const userMessage = isMinimal
+    ? `Expert: ${expertName} (${expertSpecialty})
+Duration: ${Math.max(0, Math.floor(durationSec))} seconds
+Generate the fallback recap.`
+    : `Topic: ${topic}
+Expert: ${expertName}
+Duration: ${Math.max(0, Math.floor(durationSec))} seconds
+
+Transcript:
+${transcriptText || '(empty: transcription was unavailable for this call)'}`;
+
   return streamText({
     model: anthropic(HAIKU_MODEL),
-    system: SUMMARY_SYSTEM,
-    messages: [
-      {
-        role: 'user',
-        content: `Topic: ${topic}\nExpert: ${expertName}\n\nTranscript:\n${transcriptText || '(empty: transcription was unavailable for this call)'}`,
-      },
-    ],
+    system,
+    messages: [{ role: 'user', content: userMessage }],
     // Keep summaries tight — also caps the cost per call.
     maxOutputTokens: 600,
   });
