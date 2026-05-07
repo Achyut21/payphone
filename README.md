@@ -17,16 +17,17 @@ The pitch in three lines:
 
 ## Status
 
-| Milestone | What it proves                                       | Status            |
-| --------- | ---------------------------------------------------- | ----------------- |
-| **M0**    | CDP wallet + USDC funding pre-flight                 | ✅ done (May 5–6) |
-| **M1**    | x402 round-trip on Base **Sepolia**, exact scheme    | ✅ done (May 6)   |
-| **M2**    | Swap `exact` → `upto` (Permit2 witness) on Sepolia   | ✅ done (May 6)   |
-| **M3**    | Daily.co video rooms + DDB + duration-derived settle | ✅ done (May 6)   |
-| **M4**    | Marketplace UI + live session + AI recap & chat      | ✅ done (May 6)   |
-| **M4.5**  | UI/UX overhaul: dark mode landing + navbar + polish  | ✅ done (May 6)   |
-| **M4.9**  | Bug fixes + active-window billing architectural fix  | ✅ done (May 7)   |
-| M5        | Mainnet flip + on-stage live demo                    | next              |
+| Milestone | What it proves                                                | Status            |
+| --------- | ------------------------------------------------------------- | ----------------- |
+| **M0**    | CDP wallet + USDC funding pre-flight                          | ✅ done (May 5–6) |
+| **M1**    | x402 round-trip on Base **Sepolia**, exact scheme             | ✅ done (May 6)   |
+| **M2**    | Swap `exact` → `upto` (Permit2 witness) on Sepolia            | ✅ done (May 6)   |
+| **M3**    | Daily.co video rooms + DDB + duration-derived settle          | ✅ done (May 6)   |
+| **M4**    | Marketplace UI + live session + AI recap & chat               | ✅ done (May 6)   |
+| **M4.5**  | UI/UX overhaul: dark mode landing + navbar + polish           | ✅ done (May 6)   |
+| **M4.9**  | Bug fixes + active-window billing architectural fix           | ✅ done (May 7)   |
+| **M5**    | Per-user Cognito auth + per-user CDP wallets + Amplify deploy | ✅ done (May 7)   |
+| M6        | Mainnet flip + on-stage live demo                             | next              |
 
 ### M1 proof
 
@@ -293,6 +294,119 @@ canonical session and BaseScan links carry over verbatim — M4.9 didn't
 change the on-chain math, only **when** it fires and **which seconds**
 it counts.
 
+### M5 proof
+
+PayPhone is live in production at
+**<https://main.d3vbs5akc8zis2.amplifyapp.com>**.
+
+Anyone can sign up via Cognito Hosted UI, get a freshly provisioned per-user
+CDP wallet, top it up with one click via the Sepolia USDC faucet, and run
+a real two-party video call that settles on-chain — exactly the same rail
+as M4.9, but with no shared dev wallet and no localhost.
+
+The "make it real for everyone, not just Achyut" milestone. M0–M4.9 ran on
+a single hardcoded `payphone-buyer` CDP wallet authenticated via a
+cookie-based seeded login (three demo personas — Achyut/Bob/Charlie — that
+anyone visiting localhost could pick from). M5 swaps that for AWS Cognito
+sign-up/sign-in, gives every Cognito user their own server-managed CDP
+wallet provisioned lazily on first session, lets them top it up with a
+one-click testnet faucet, locks down session resources to their owner, and
+ships the whole thing to AWS Amplify Hosting. The Achyut demo account is
+preserved as a one-row DDB migration that points his Cognito sub at the
+existing M0-funded wallet, so the on-stage Sepolia demo still uses the
+funded address with no surprise.
+
+**Auth & per-user wallets.**
+
+- **AWS Cognito user pool + Hosted UI** (`infra/terraform/cognito.tf`, NEW).
+  `aws_cognito_user_pool` with email username + auto-verification, `aws_cognito_user_pool_domain` for the Hosted UI redirect destination, and `aws_cognito_user_pool_client` (confidential client with `generate_secret = true`, `code` OAuth flow, `openid email profile` scopes). `terraform apply` produced pool `us-east-1_LpxZibNkY` and client `7e7slec78v8u0t9obg9jj13h0f`.
+- **NextAuth v5 (beta) + Cognito provider** (`auth.ts`, NEW). Module-level
+  factory exporting `auth` / `signIn` / `signOut` / `handlers` to the rest
+  of the app. JWT strategy (no DB sessions) with a `session` callback that
+  surfaces `token.sub` as `session.user.id`. `trustHost: true` is mandatory
+  behind ngrok / Amplify CloudFront / any reverse proxy.
+- **Per-user CDP wallets, lazy** (`lib/user-wallet.ts`, NEW). New DDB table
+  `payphone-users` (hash key `cognito_sub`). `getOrCreateUserWallet` does a
+  fast-path read; on miss, calls CDP's idempotent `getOrCreateAccount({ name })` first, then a conditional `Put` (race-safe: two concurrent first-session requests both end up with the same wallet via CDP's idempotency, only one row gets written, the loser re-reads the winner's row). Wallets are NOT created at signup — only on the first action that needs one (first balance fetch, first faucet click, first session).
+- **Wallet name 36-char fix.** CDP enforces 2..=36 character wallet names.
+  The natural `payphone-user-${cognito_sub}` is 50 chars and rejected.
+  `walletNameFor(sub)` hashes via `createHash('sha256').slice(0, 16)` and
+  prefixes `payphone-`, producing a deterministic 25-char name like
+  `payphone-a3b8c92ff1e240d8`. Birthday-paradox collision threshold ≈ 4
+  billion accounts.
+- **Achyut migration** (`scripts/migrate-achyut.ts`, NEW). One-time DDB row
+  pointing the demo account's Cognito sub at the M0-funded
+  `payphone-buyer` wallet so the on-stage Sepolia demo doesn't need a
+  faucet refill. Idempotent via `attribute_not_exists` condition.
+
+**Faucet, balance, network signaling.**
+
+- **`/api/users/me/balance`** (NEW). GET endpoint returning the
+  authenticated user's wallet address + USDC balance. viem `readContract`
+  against `ACTIVE_USDC_ADDRESS` on the active network.
+- **`/api/users/me/faucet`** (NEW). POST endpoint that drips 10 Sepolia
+  USDC via `cdp.evm.requestFaucet({ network: 'base-sepolia', token: 'usdc' })`.
+  Mainnet guard rejects with 400. On rate-limit / 24h quota exhaustion,
+  returns 503 with `fallback_url: 'https://faucet.circle.com/'` so the
+  user has a manual recovery path.
+- **`<WalletPanel />` on `/marketplace`** (`components/WalletPanel.tsx`,
+  NEW). Polls balance every 8s, shows truncated address + BaseScan link,
+  conditionally renders the orange "Fund my wallet" button when
+  `balanceUsd < $5 && ACTIVE_NETWORK === 'sepolia'`.
+- **Network badge in the navbar.** Inline pill rendering "Base Sepolia"
+  (orange) or "Base Mainnet" (success-green). Driven entirely off
+  `ACTIVE_NETWORK`, which now reads from
+  `process.env.NEXT_PUBLIC_ACTIVE_NETWORK ?? 'sepolia'` — the
+  `NEXT_PUBLIC_` prefix matters because the badge consumes it client-side.
+- **Honest pricing.** All four expert cards now read `$0.60/min` (matches
+  the on-chain settle rate). Previously `$2/min`, `$3/min`, `$2/min`,
+  `$4/min` — flavor that contradicted what BaseScan would show.
+
+**Session ownership guards** (`lib/session-auth.ts`, NEW). Two helpers
+covering both API routes and server pages. `requireSessionOwner(sessionId)`
+returns either the row or a 401/404 NextResponse to surface verbatim; non-
+owner gets the SAME 404 as a missing session so we don't leak existence.
+`requireSessionOwnerForPage` redirects to `/marketplace` instead. Applied
+to all five `/api/sessions/[id]/*` routes (`recap`, `chat`, `transcript`,
+`status`, `retry-settle`) plus the three `/session/[id]/*` server pages.
+Cross-user URL probing now silently bounces.
+
+**Amplify deployment.**
+
+- **`amplify.yml`** (NEW). Pins Node 22 via `nvm install 22 && nvm use 22`
+  (above Next 16's 20.9+ floor), pins pnpm to `10.33.3` via corepack,
+  installs with `--frozen-lockfile`. The build phase ALSO runs
+  `env | grep -E '^(COGNITO_|CDP_|...)' >> .env.production` to forward
+  Console-set env vars into Next.js's SSR runtime — Amplify does NOT do
+  this automatically, and without that line every server-side
+  `process.env.X` read returns undefined in production.
+- **`APP_AWS_*` env-var aliases** (`lib/db.ts`, updated). Amplify reserves
+  the entire `AWS_*` env-var prefix and refuses to let you set
+  `AWS_REGION` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` at config
+  time. `resolveAwsConfig()` reads `APP_AWS_*` first, falls back to
+  `AWS_*`. Credentials are now passed explicitly to the
+  `DynamoDBClient` constructor rather than relying on the SDK's default
+  credential provider chain.
+- **Cognito callback URL update**. The Amplify-issued production URL
+  appended to `aws_cognito_user_pool_client.callback_urls` and
+  `logout_urls` via `infra/terraform/cognito.tf`.
+- **Daily webhook re-registration**. Re-ran
+  `scripts/register-daily-webhook.ts` against the Amplify URL — the
+  script's stale-cleanup logic auto-deleted the M3-era ngrok webhook,
+  registered a new one, and returned a fresh HMAC secret which now lives
+  in Amplify's `DAILY_WEBHOOK_SECRET` env var.
+
+**End-to-end verification.** User signed in as Achyut on
+`https://main.d3vbs5akc8zis2.amplifyapp.com`, opened a session in one tab,
+joined the same Daily room URL in a second tab simulating the expert,
+talked for ~20 seconds, hung up. Daily's `participant.left` webhook hit
+the Amplify route, HMAC verified against the fresh secret, fired settle,
+on-chain tx landed on Base Sepolia, row transitioned to COMPLETED, buyer
+was navigated to the recap with a working BaseScan link. The whole rail
+works end-to-end on production with real Cognito users + per-user wallets
+
+- real Daily webhooks + real on-chain settle.
+
 ## Stack
 
 - **Next.js 16** App Router, **TypeScript** strict
@@ -558,30 +672,38 @@ Living under `scripts/`:
 ```
 app/
   page.tsx                            (M4.5) public marketing landing — hero, how-it-works, live last-call, expert preview
-  marketplace/page.tsx                (M4.5) cookie-gated expert browse (was at app/page.tsx in M4)
+  marketplace/page.tsx                (M4.5) Cognito-gated expert browse (M5: also mounts <WalletPanel />)
   docs/page.tsx                       (M4.5) public docs page — architecture diagram, milestones, tech stack
   layout.tsx                          root layout, metadata, fonts, Navbar/Footer (suppressHydrationWarning on body)
   globals.css                         Tailwind v4 @theme + payphone M4.5 tokens + typography plugin + aurora keyframe
-  login/page.tsx                      (M4) seeded-user login (server action) — redesigned with Spotlight bg in M4.5
+  login/page.tsx                      (M5) Cognito Hosted UI sign-in (server action signIn('cognito'))
   _actions/session.ts                 (M4) startSession server action — kicks off /api/sessions
-  _actions/auth.ts                    (M4.5) logoutAction — clears cookie + redirect to /
-  session/[id]/page.tsx               (M4) live session page (mints meeting token, renders SessionRoom)
-  session/[id]/recap/page.tsx         (M4) post-call recap page (M4.5: wraps in AuroraBackground)
-  api/sessions/route.ts               x402-protected session creation: verify, createRoom, persist
-  api/sessions/[id]/status/route.ts   (M4) GET — current status, used by client polling
-  api/sessions/[id]/transcript/route.ts (M4) POST — append a transcript line to DDB
-  api/sessions/[id]/recap/route.ts    (M4) GET — streams Haiku-generated markdown summary
-  api/sessions/[id]/chat/route.ts     (M4) POST — streams Haiku follow-up chat answers
-  api/webhooks/daily/route.ts         Daily meeting.ended handler: HMAC, settle, mark COMPLETED
-proxy.ts                              Next 16 edge proxy — cookie gate for /marketplace, /session/* (M4.5: was for / in M4)
+  _actions/auth.ts                    (M5) signOut server action — calls NextAuth signOut
+  session/[id]/page.tsx               (M4) live session page — M5: ownership-gated via requireSessionOwnerForPage
+  session/[id]/recap/page.tsx         (M4) post-call recap page — M5: ownership-gated
+  session/[id]/timeout/page.tsx       (M4.9) no-expert-joined timeout page — M5: ownership-gated
+  api/auth/[...nextauth]/route.ts     (M5) NextAuth handlers (GET/POST) re-exported from auth.ts
+  api/users/me/balance/route.ts       (M5) GET — authenticated user's wallet address + USDC balance (viem readContract)
+  api/users/me/faucet/route.ts        (M5) POST — drip 10 Sepolia USDC via CDP faucet, with Circle fallback URL
+  api/sessions/route.ts               x402-protected session creation: verify, createRoom, persist (M5: per-user wallet)
+  api/sessions/[id]/status/route.ts   (M4) GET — current status — M5: ownership-gated
+  api/sessions/[id]/transcript/route.ts (M4) POST — append a transcript line — M5: ownership-gated
+  api/sessions/[id]/recap/route.ts    (M4) GET — streams Haiku summary — M5: ownership-gated
+  api/sessions/[id]/chat/route.ts     (M4) POST — streams Haiku chat — M5: ownership-gated
+  api/sessions/[id]/retry-settle/route.ts (M4.9) POST — manual retry from SETTLE_FAILED — M5: ownership-gated
+  api/webhooks/daily/route.ts         Daily participant.{joined,left} + meeting.ended handler — HMAC, settle, mark COMPLETED
+auth.ts                               (M5) NextAuth v5 factory — Cognito provider, JWT strategy, trustHost
+next-auth.d.ts                        (M5) module augmentation — Session.user.id type
+proxy.ts                              Next 16 edge proxy — wraps NextAuth auth() — gates /marketplace, /session/* (M5: NextAuth-backed)
+amplify.yml                           (M5) AWS Amplify Hosting build spec — Node 22 + pnpm + .env.production forwarding
 components/
   Navbar.tsx                          (M4.5) server — fetches user, hands to NavbarShell, self-skips on /session/<id>
-  NavbarShell.tsx                     (M4.5) client — Aceternity floating navbar with mobile drawer, user pill, active highlight
+  NavbarShell.tsx                     (M4.5) client — Aceternity floating navbar — M5: <NetworkBadge /> inline
   Footer.tsx                          (M4.5) three-column footer — self-skips on /session/* (call + recap)
+  WalletPanel.tsx                     (M5) client — polls /api/users/me/balance, "Fund my wallet" button, faucet fallback
   ExpertCard.tsx                      (M4) marketplace card — redesigned in M4.5 (orange rate badge, hover lift, flex-1 footer)
   ExpertCardSubmitButton.tsx          (M4.5) client wrapper using useFormStatus for spinner during startSession
-  LoginPersonaButton.tsx              (M4.5) client wrapper using useFormStatus on the persona pick button
-  SessionRoom.tsx                     (M4) Daily iframe + ticker + transcription + status polling — M4.5 redesigned JSX, backend identical
+  SessionRoom.tsx                     (M4) Daily iframe + ticker + transcription + status polling — M4.5 redesigned JSX
   Ticker.tsx                          (M4) live $X.XX billing ticker, freezes on call end
   Recap.tsx                           (M4) recap UI — M4.5 redesigned JSX, backend identical (settle status card, M4.5 chat palette)
   ui/aurora-background.tsx            (M4.5) Aceternity — recolored to payphone palette, used on /marketplace + /session/<id>/recap
@@ -589,20 +711,29 @@ components/
   ui/spotlight-new.tsx                (M4.5) Aceternity — recolored, used on /login
   ui/floating-navbar.tsx              (M4.5) Aceternity primitive — base for NavbarShell
   ui/                                 shadcn primitives (button, card, input, avatar, badge, …)
-infra/terraform/                      AWS infra-as-code (DDB table + scoped runtime IAM)
+infra/terraform/                      AWS infra-as-code
+  cognito.tf                          (M5) Cognito user pool, Hosted UI domain, web app client — callbacks for localhost + Amplify
+  users-table.tf                      (M5) payphone-users DDB table (cognito_sub → CDP wallet mapping)
+  dynamodb.tf                         (M3) payphone-sessions DDB table
+  iam.tf                              runtime IAM user with DDB CRUD on both tables
+  outputs.tf                          terraform output for env-var bootstrap (sensitive: client secret, app keys)
 lib/
-  constants.ts                        ALL chain/contract constants in ONE place
+  constants.ts                        ALL chain/contract constants — M5: ACTIVE_NETWORK reads NEXT_PUBLIC_ACTIVE_NETWORK
   cdp.ts                              CDP client singleton + buyer/seller account accessors
   x402.ts                             facilitator client + retry-with-backoff settle
   daily.ts                            Daily REST + webhook HMAC + (M4) meeting tokens
-  db.ts                               DynamoDB doc client + session CRUD + (M4) appendTranscript + (M4.5) getLatestCompletedSession
-  agent.ts                            (M4) `requestSession` — shared by CLI + server action
-  auth.ts                             (M4) cookie helpers (getCurrentUser / setCurrentUser)
-  seed.ts                             (M4) demo users + experts (M4.5: tagline field added)
+  db.ts                               DynamoDB doc client + session CRUD — M5: APP_AWS_* aliases for Amplify, getDoc() exported
+  agent.ts                            (M4) `requestSession` — M5: optional buyer override for CLI
+  auth.ts                             (M5) NextAuth wrapper — getCurrentUser() returns AppUser from session
+  user-wallet.ts                      (M5) getOrCreateUserWallet — lazy CDP wallet provisioning + DDB mapping
+  session-auth.ts                     (M5) requireSessionOwner / requireSessionOwnerForPage — ownership guards
+  seed.ts                             (M5) experts only (DEMO_USERS removed); displayRate harmonized to $0.60/min
   avatar.ts                           (M4) DiceBear hosted-CDN avatar URLs
   haiku.ts                            (M4) Anthropic Haiku via Vercel AI SDK — summarize + chat
+  billing.ts                          (M4.9) active-window math — pure functions, idempotent + commutative
   utils.ts                            (M4) shadcn `cn` helper
 scripts/                              diagnostic + admin scripts (see table above)
+  migrate-achyut.ts                   (M5) one-time DDB row linking a Cognito sub → existing M0-funded wallet
 ```
 
 ## Scripts
