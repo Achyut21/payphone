@@ -17,11 +17,12 @@
  *   - unknown expert id  → fall back to a generic display; the on-chain
  *                          flow still works regardless of the seed lookup.
  *
- * The login proxy already gates this route, so we trust `getCurrentUser()`
- * to be non-null. We don't enforce that the current user is the same one
- * who started the session (M5 polish — for now multiple seeded users may
- * share a buyer wallet, and the fake auth means strict ownership checks
- * would block legitimate testing flows).
+ * The login proxy already gates this route at the cookie level. M5
+ * adds the ownership check here too: if the current user isn't the
+ * one who started this session, redirect to `/marketplace`. A
+ * non-owner peeking at someone else's URL gets the same outcome as
+ * "this session doesn't exist" (no existence leak from the page-level
+ * UX either).
  *
  * M4.5 layout: the navbar and footer self-skip on `/session/<id>` (Phase
  * 2's route guards in `Navbar.tsx` / `Footer.tsx`), so the call is
@@ -34,8 +35,8 @@ import { notFound, redirect } from 'next/navigation';
 
 import { SessionRoom } from '@/components/SessionRoom';
 import { createMeetingToken } from '@/lib/daily';
-import { getSession } from '@/lib/db';
 import { findExpertById } from '@/lib/seed';
+import { requireSessionOwnerForPage } from '@/lib/session-auth';
 
 type SessionPageProps = {
   // Next 16 makes route-segment params an async Promise.
@@ -46,8 +47,9 @@ export default async function SessionPage({ params }: SessionPageProps) {
   const { id } = await params;
   if (!id) notFound();
 
-  const session = await getSession(id);
-  if (!session) notFound();
+  // Auth + ownership: redirects to /login (unauthed) or /marketplace
+  // (signed-in but not the owner). Returns row + user on success.
+  const { row: session } = await requireSessionOwnerForPage(id);
 
   // Already settled — go straight to recap.
   if (session.status === 'COMPLETED' || session.status === 'SETTLE_FAILED') {

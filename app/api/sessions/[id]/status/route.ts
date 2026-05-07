@@ -9,6 +9,11 @@
  * indefinitely on a typoed path. The marketplace's startSession action
  * redirects to a real id, so 404 only happens with hand-typed URLs.
  *
+ * Auth: M5 ownership gate via `requireSessionOwner`. A non-owner gets
+ * the same 404 as a missing session — we don't leak existence. This
+ * also means a non-owner can't trigger the lazy 90s timeout transition
+ * below on someone else's session.
+ *
  * `runtime = 'nodejs'` because `lib/db.ts` uses the AWS SDK (Node-only).
  *
  * Note: Next 16 makes route-segment params async (`Promise<{ id }>`).
@@ -24,6 +29,7 @@
 import { NextResponse } from 'next/server';
 
 import { getSession, markSessionTimedOut, type SessionRow } from '@/lib/db';
+import { requireSessionOwner } from '@/lib/session-auth';
 
 export const runtime = 'nodejs';
 
@@ -44,10 +50,9 @@ export async function GET(
     return NextResponse.json({ error: 'missing_id' }, { status: 400 });
   }
 
-  let session = await getSession(id);
-  if (!session) {
-    return NextResponse.json({ error: 'not_found' }, { status: 404 });
-  }
+  const guard = await requireSessionOwner(id);
+  if (!guard.ok) return guard.response;
+  let session: SessionRow = guard.row;
 
   // M4.9: lazy timeout transition. If the session has been waiting for
   // the second participant to join for >90s, flip it to TIMEOUT. The

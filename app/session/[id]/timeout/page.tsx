@@ -23,7 +23,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 
 import { AuroraBackground } from '@/components/ui/aurora-background';
-import { getSession } from '@/lib/db';
+import { requireSessionOwnerForPage } from '@/lib/session-auth';
 
 type TimeoutPageProps = {
   params: Promise<{ id: string }>;
@@ -33,8 +33,9 @@ export default async function TimeoutPage({ params }: TimeoutPageProps) {
   const { id } = await params;
   if (!id) notFound();
 
-  const session = await getSession(id);
-  if (!session) notFound();
+  // M5: ownership gate. Non-owners get bounced to /marketplace before
+  // they see the timeout page, matching the rest of /session/[id]/*.
+  const { row: session } = await requireSessionOwnerForPage(id);
 
   if (session.status === 'AUTHORIZED' || session.status === 'ACTIVE') {
     redirect(`/session/${session.session_id}`);

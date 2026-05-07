@@ -6,18 +6,19 @@
  * button on the recap (Phase 6). That button POSTs to this endpoint.
  *
  * Flow:
- *   1. Auth-gate via `getCurrentUser()` (cookie). The endpoint is
- *      under /api/* which the proxy doesn't cover, so we check inline.
- *   2. Look up the session. 404 if missing.
- *   3. Verify status === SETTLE_FAILED. Anything else is a no-op
+ *   1. Auth + ownership gate via `requireSessionOwner`. The endpoint
+ *      is under /api/* which the proxy doesn't cover; the helper does
+ *      both the cookie check AND the ownership check inline. Non-owner
+ *      gets 404 (no existence leak), unauthenticated gets 401.
+ *   2. Verify status === SETTLE_FAILED. Anything else is a no-op
  *      idempotent success (the recap might be stale).
- *   4. Reconstruct the settle requirements using the row's persisted
+ *   3. Reconstruct the settle requirements using the row's persisted
  *      `duration_sec` (the duration the failed settle was for — this
  *      is locked in DDB so a retry settles for exactly the same
  *      amount the buyer already saw).
- *   5. Decode the stored PaymentPayload + call settleWithRetry.
- *   6. On success: markSessionRetrySettled (SETTLE_FAILED -> COMPLETED).
- *   7. On failure: leave row in SETTLE_FAILED and surface the error.
+ *   4. Decode the stored PaymentPayload + call settleWithRetry.
+ *   5. On success: markSessionRetrySettled (SETTLE_FAILED -> COMPLETED).
+ *   6. On failure: leave row in SETTLE_FAILED and surface the error.
  *
  * Idempotency: if the buyer double-clicks, the second call hits the
  * status-check and short-circuits. If two clicks race past that
@@ -43,8 +44,8 @@ import {
   computeSettleAmount,
 } from '@/lib/constants';
 import { getSellerAddress } from '@/lib/cdp';
-import { getCurrentUser } from '@/lib/auth';
-import { getSession, markSessionRetrySettled } from '@/lib/db';
+import { markSessionRetrySettled } from '@/lib/db';
+import { requireSessionOwner } from '@/lib/session-auth';
 import { settleWithRetry } from '@/lib/x402';
 
 export const runtime = 'nodejs';
@@ -53,20 +54,14 @@ export async function POST(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
-  }
-
   const { id } = await params;
   if (!id || id.length === 0) {
     return NextResponse.json({ error: 'missing_id' }, { status: 400 });
   }
 
-  const session = await getSession(id);
-  if (!session) {
-    return NextResponse.json({ error: 'not_found' }, { status: 404 });
-  }
+  const guard = await requireSessionOwner(id);
+  if (!guard.ok) return guard.response;
+  const { row: session } = guard;
 
   // Idempotent fast paths.
   if (session.status === 'COMPLETED') {

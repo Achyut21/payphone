@@ -15,10 +15,9 @@ import { NextResponse } from 'next/server';
 import { type UIMessage } from 'ai';
 import { z } from 'zod';
 
-import { getCurrentUser } from '@/lib/auth';
-import { getSession } from '@/lib/db';
 import { chatWithContext } from '@/lib/haiku';
 import { findExpertById } from '@/lib/seed';
+import { requireSessionOwner } from '@/lib/session-auth';
 
 export const runtime = 'nodejs';
 
@@ -37,11 +36,6 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
-  }
-
   const { id } = await params;
   if (!id) {
     return NextResponse.json({ error: 'missing_id' }, { status: 400 });
@@ -57,10 +51,9 @@ export async function POST(
     );
   }
 
-  const session = await getSession(id);
-  if (!session) {
-    return NextResponse.json({ error: 'not_found' }, { status: 404 });
-  }
+  const guard = await requireSessionOwner(id);
+  if (!guard.ok) return guard.response;
+  const { row: session } = guard;
 
   const expert = findExpertById(session.expert_id);
   const expertName = expert?.name ?? 'the expert';

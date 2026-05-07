@@ -31,8 +31,8 @@ import { notFound, redirect } from 'next/navigation';
 import { Recap } from '@/components/Recap';
 import { AuroraBackground } from '@/components/ui/aurora-background';
 import { BASESCAN_TX_BASE_URL } from '@/lib/constants';
-import { getSession } from '@/lib/db';
 import { findExpertById } from '@/lib/seed';
+import { requireSessionOwnerForPage } from '@/lib/session-auth';
 
 type RecapPageProps = {
   params: Promise<{ id: string }>;
@@ -52,8 +52,9 @@ export default async function RecapPage({ params }: RecapPageProps) {
   const { id } = await params;
   if (!id) notFound();
 
-  const session = await getSession(id);
-  if (!session) notFound();
+  // M5: ownership gate — non-owners get redirected to /marketplace
+  // rather than seeing the recap of someone else's call.
+  const { row: session } = await requireSessionOwnerForPage(id);
 
   // The call hasn't settled yet — the user shouldn't see a recap of an
   // unsettled call. Bounce them back to the live page so they can wait

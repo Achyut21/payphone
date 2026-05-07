@@ -7,12 +7,10 @@
  * each chunk as `[hh:mm:ss] participant: text`, and POSTs it here. We
  * append to the session row's `transcript` list via DDB list_append.
  *
- * Auth: cookie-gated by the proxy in `proxy.ts` since this lives under
- * `/api/sessions/...`. Wait — `proxy.ts` only matches `/` and
- * `/session/:path*`, NOT `/api/sessions/...`. So we re-check the cookie
- * here. We don't enforce that the cookie's user owns this specific
- * session — M5 polish; for the demo it's fine, since the only way a
- * client gets the session id is by going through `startSession`.
+ * Auth: M5 ownership gate via `requireSessionOwner` — only the user
+ * whose `cognito_sub` matches `session.user_id` can append transcript
+ * lines. Without this guard, any logged-in user could spam transcript
+ * lines into anyone else's session (a fun-but-bad griefing vector).
  *
  * Failure modes:
  *   - Bad/unknown id → 404. Not 5xx — we don't want fetch retries
@@ -26,8 +24,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
-import { getCurrentUser } from '@/lib/auth';
-import { appendTranscript, getSession } from '@/lib/db';
+import { appendTranscript } from '@/lib/db';
+import { requireSessionOwner } from '@/lib/session-auth';
 
 export const runtime = 'nodejs';
 
@@ -41,24 +39,15 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
-  }
-
   const { id } = await params;
   if (!id || id.length === 0) {
     return NextResponse.json({ error: 'missing_id' }, { status: 400 });
   }
 
-  // Quick existence check so we don't write transcript lines into a
-  // wrong/typoed session id (DDB UpdateItem would create a phantom row
-  // — the row's other required fields would be missing but the
-  // `transcript` list would still be persisted).
-  const session = await getSession(id);
-  if (!session) {
-    return NextResponse.json({ error: 'not_found' }, { status: 404 });
-  }
+  // Auth + ownership check — also covers existence (returns 404 if the
+  // session row doesn't exist OR if the current user isn't the owner).
+  const guard = await requireSessionOwner(id);
+  if (!guard.ok) return guard.response;
 
   let parsed: z.infer<typeof TranscriptBodySchema>;
   try {

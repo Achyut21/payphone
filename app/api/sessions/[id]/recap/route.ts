@@ -6,10 +6,10 @@
  * DDB, calls Haiku, returns a streaming `Response`. The client uses the
  * AI SDK's `useCompletion` hook to render token-by-token.
  *
- * Auth: cookie-gated (the proxy doesn't cover `/api/*`, so we re-check
- * here). M5 polish: tie ownership to the cookie's user_id. For now any
- * logged-in seeded user can fetch any session's recap, which is fine
- * since the seeded auth is not a security boundary.
+ * Auth: M5 ownership gate via `requireSessionOwner` — only the user
+ * whose `cognito_sub` matches `session.user_id` can fetch the recap.
+ * Non-owners (and unauthenticated requests) get a 404 (no existence
+ * leak) / 401 respectively.
  *
  * `runtime = 'nodejs'` because lib/db (AWS SDK) and lib/haiku
  * (anthropic SDK) are both Node-only.
@@ -17,10 +17,9 @@
 
 import { NextResponse } from 'next/server';
 
-import { getCurrentUser } from '@/lib/auth';
-import { getSession } from '@/lib/db';
 import { summarize } from '@/lib/haiku';
 import { findExpertById } from '@/lib/seed';
+import { requireSessionOwner } from '@/lib/session-auth';
 
 export const runtime = 'nodejs';
 
@@ -28,20 +27,14 @@ export async function GET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
-  }
-
   const { id } = await params;
   if (!id) {
     return NextResponse.json({ error: 'missing_id' }, { status: 400 });
   }
 
-  const session = await getSession(id);
-  if (!session) {
-    return NextResponse.json({ error: 'not_found' }, { status: 404 });
-  }
+  const guard = await requireSessionOwner(id);
+  if (!guard.ok) return guard.response;
+  const { row: session } = guard;
 
   const expert = findExpertById(session.expert_id);
   const expertName = expert?.name ?? 'the expert';
