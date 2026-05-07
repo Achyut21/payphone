@@ -1,34 +1,25 @@
 /**
- * PayPhone — seeded demo data.
+ * PayPhone — seeded demo data (M5 — experts only).
  *
- * Three demo "users" (login as Achyut/Bob/Charlie) and four "experts" (the
- * marketplace cards). No DB, no admin panel — these are hardcoded values.
+ * Four hardcoded experts that populate the marketplace cards. No DB, no
+ * admin panel — these are static values rendered server-side.
  *
- * Per-second billing math is uniform across all experts in M4: every
- * session settles for `floor(duration_sec) × M3_PER_SECOND_RATE_ATOMIC`
- * = $0.01/sec. The `displayRate` strings on each expert are MARKETING
- * COPY ONLY — they vary on the cards to make the marketplace feel real,
- * but the on-chain settle is identical regardless of which expert the
- * user picks. M5+ may diverge per-expert rates with care; doing so
- * requires plumbing a per-session rate through the buyer signing
- * context AND the webhook settle path. Don't change `displayRate`
- * expecting it to flow through to chain math — it doesn't.
+ * History:
+ *   - M4 had three `DemoUser` rows (Achyut/Bob/Charlie) used by the
+ *     cookie-based seeded login. M5 replaced that with Cognito + per-
+ *     user CDP wallets, and the demo-user list went away (this file
+ *     used to define it). The user identity now flows from
+ *     `lib/auth.ts.AppUser` derived from the Cognito session.
+ *   - The cookie-name constant `AUTH_COOKIE_NAME` was deleted with
+ *     the demo-user rows; NextAuth manages its own session cookie.
+ *
+ * Per-second billing math is uniform across all experts: every session
+ * settles for `floor(active_window_duration_sec) ×
+ * M3_PER_SECOND_RATE_ATOMIC` = $0.01/sec ($0.60/min). Phase 5 of M5
+ * harmonizes the per-card `displayRate` strings to match this so the
+ * marketplace stops showing inflated `$2/min` / `$3/min` / `$4/min`
+ * labels alongside an actual settle of $0.60/min.
  */
-
-export type DemoUser = {
-  /** Stable id; used as cookie value. */
-  id: string;
-  name: string;
-  /** Seed for DiceBear avatar (deterministic per id). */
-  avatarSeed: string;
-  /**
-   * Short persona tagline shown on the login picker (M4.5). Two facets
-   * separated by `·`, e.g. "Web3 founder · power user". Keeps the demo
-   * users feeling like distinct personas rather than interchangeable
-   * radio-button labels.
-   */
-  tagline: string;
-};
 
 export type DemoExpert = {
   /** Stable id; persisted as `expert_id` on the session row. */
@@ -43,26 +34,6 @@ export type DemoExpert = {
   displayRate: string;
   avatarSeed: string;
 };
-
-export const DEMO_USERS: readonly DemoUser[] = [
-  {
-    // M4.9: renamed display name from "Alice" to "Achyut" so the buyer
-    // doesn't visually collide with expert "Alice Chen" during demos.
-    // The `id` stays "alice" so existing auth cookies / DDB rows
-    // continue to resolve — the rename is purely cosmetic.
-    id: 'alice',
-    name: 'Achyut',
-    avatarSeed: 'achyut-payphone',
-    tagline: 'Hackathon builder · power user',
-  },
-  { id: 'bob', name: 'Bob', avatarSeed: 'bob-payphone', tagline: 'Solidity dev · day-trader' },
-  {
-    id: 'charlie',
-    name: 'Charlie',
-    avatarSeed: 'charlie-payphone',
-    tagline: 'DAO maintainer · multi-tasker',
-  },
-] as const;
 
 export const DEMO_EXPERTS: readonly DemoExpert[] = [
   {
@@ -104,20 +75,7 @@ export const DEMO_EXPERTS: readonly DemoExpert[] = [
 ] as const;
 
 /** Lookup helper. Returns null if no match. */
-export function findUserById(id: string | undefined): DemoUser | null {
-  if (!id) return null;
-  return DEMO_USERS.find((u) => u.id === id) ?? null;
-}
-
-/** Lookup helper. Returns null if no match. */
 export function findExpertById(id: string | undefined): DemoExpert | null {
   if (!id) return null;
   return DEMO_EXPERTS.find((e) => e.id === id) ?? null;
 }
-
-/**
- * Auth cookie name. Defined here (not in `lib/auth.ts`) so that Edge-runtime
- * code paths like Next middleware can read it without pulling in the
- * `server-only` `next/headers` API used by the auth helpers.
- */
-export const AUTH_COOKIE_NAME = 'payphone_user';
