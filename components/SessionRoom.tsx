@@ -97,6 +97,12 @@ export function SessionRoom({
   // null, the ticker counts up; once set, the ticker freezes at this
   // value (so the displayed total matches what we'll settle for).
   const [endedAtSec, setEndedAtSec] = useState<number | null>(null);
+  // M4.9 Bug 2 fix: tracks whether the OTHER participant left the call
+  // (vs the local user clicking End call). When true, the side panel
+  // shows a "Other party left, settling…" line so the user understands
+  // why the ticker froze and what's happening next. The settle itself
+  // is fired server-side by the participant.left webhook (Phase 5).
+  const [remotePartyLeft, setRemotePartyLeft] = useState(false);
   // Live transcript lines for the in-call panel (M4.5). M4 captured
   // these only to POST them to DDB; the visual surface is new.
   const [liveTranscript, setLiveTranscript] = useState<TranscriptLine[]>([]);
@@ -312,6 +318,31 @@ export function SessionRoom({
         setEndedAtSec((prev) => prev ?? Math.floor(Date.now() / 1000));
       });
 
+      // M4.9 Bug 2 fix: freeze the ticker when the OTHER participant
+      // leaves. M4.5 only listened for `left-meeting` (local user); when
+      // the expert hung up first, the buyer's ticker kept counting up
+      // until they also left — overcharging visually and confusing the
+      // demo. `participant-left` fires for any remote leave (close-tab,
+      // network drop, explicit Leave). We ignore the local case here
+      // (`left-meeting` already handles it) and set `endedAt` to now,
+      // which freezes the ticker. We also flag `remotePartyLeft` so the
+      // sidebar can show contextual copy. The on-chain settle is driven
+      // server-side by the participant.left webhook (Phase 5) and uses
+      // the active-window math (Phase 4) to compute the actual amount —
+      // this client-side freeze is purely UX so the displayed total
+      // never advances past the on-chain settle.
+      call.on('participant-left', (event) => {
+        if (cancelled) return;
+        // Daily's typing on this event is loose across SDK versions;
+        // pull defensively. The `local` flag is what we need: true =
+        // it's our own leave (handled elsewhere); false/undefined = the
+        // other party left.
+        const e = event as unknown as { participant?: { local?: boolean } };
+        if (e.participant?.local === true) return;
+        setEndedAtSec((prev) => prev ?? Math.floor(Date.now() / 1000));
+        setRemotePartyLeft(true);
+      });
+
       try {
         // Token is what grants the `canAdmin: 'transcription'` permission
         // needed for `startTranscription()` to actually start. Without it,
@@ -390,8 +421,16 @@ export function SessionRoom({
           Sticks to the page top inside the call route. */}
       <div className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-payphone-border bg-payphone-surface/80 px-4 py-3 backdrop-blur-md lg:hidden">
         <div className="flex min-w-0 flex-col">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-payphone-ink-muted">
-            On call · {expertName}
+          <span
+            className={`text-[10px] font-semibold uppercase tracking-wider ${
+              settling ? 'text-payphone-orange' : 'text-payphone-ink-muted'
+            }`}
+          >
+            {settling
+              ? remotePartyLeft
+                ? `${expertName} left · settling`
+                : 'Ending call · settling'
+              : `On call · ${expertName}`}
           </span>
           <Ticker startedAt={startedAt} endedAt={endedAtSec} />
         </div>
@@ -462,13 +501,28 @@ export function SessionRoom({
           <div className="flex justify-end">
             <Ticker startedAt={startedAt} endedAt={endedAtSec} />
           </div>
-          <p className="mt-1 text-xs leading-relaxed text-payphone-ink-muted">
-            Settles on hangup for{' '}
-            <code className="rounded bg-payphone-surface-elevated px-1 py-0.5 font-mono text-[10px] text-payphone-orange">
-              floor(sec) × $0.01
-            </code>
-            . Unspent allowance never moves on-chain.
-          </p>
+          {settling ? (
+            // M4.9: when the call is wrapping, swap the per-second hint
+            // for a contextual "what's happening" line. `remotePartyLeft`
+            // distinguishes "the expert hung up" from "you hit End call"
+            // so the buyer doesn't think they did something wrong.
+            <p className="mt-1 flex items-start gap-1.5 rounded-md border border-payphone-orange/30 bg-payphone-orange/10 px-2 py-1.5 text-xs leading-relaxed text-payphone-orange">
+              <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin" aria-hidden="true" />
+              <span>
+                {remotePartyLeft
+                  ? `${expertName} left the call. Settling on-chain…`
+                  : 'Ending call. Settling on-chain…'}
+              </span>
+            </p>
+          ) : (
+            <p className="mt-1 text-xs leading-relaxed text-payphone-ink-muted">
+              Settles on hangup for{' '}
+              <code className="rounded bg-payphone-surface-elevated px-1 py-0.5 font-mono text-[10px] text-payphone-orange">
+                floor(sec) × $0.01
+              </code>
+              . Unspent allowance never moves on-chain.
+            </p>
+          )}
         </div>
 
         {/* Transcript scroll — flex-1 so it fills the gap between
