@@ -15,9 +15,7 @@
 
 🎥 **Watch the demo →** **<https://youtu.be/V8pga7SQjxE>** &nbsp;·&nbsp; 🔗 **Live app →** **<https://main.d3vbs5akc8zis2.amplifyapp.com>**
 
-![PayPhone hero — landing page](https://placehold.co/1280x640/0A0A0A/FAFAFA?text=PayPhone+%E2%80%94+per-second+video+calls+on+Base)
-
-<!-- TODO: replace with docs/screenshots/01-hero.png — landing page hero, signed-out, dark mode, 1280x640 -->
+![PayPhone hero — landing page](screenshots/thumbnail.png)
 
 ---
 
@@ -354,9 +352,7 @@ Public marketing page with `BackgroundBeamsWithCollision`, how-it-works
 3-card breakdown, a server-fetched **live last-call widget** showing the
 most recent settled session, and a built-on-by badge row.
 
-![Landing page hero](https://placehold.co/1280x720/0A0A0A/0052FF?text=01+%E2%80%94+Landing+Page+%2F)
-
-<!-- TODO: replace with docs/screenshots/01-hero.png — landing page hero, signed-out, dark mode, 1280x720 -->
+![Landing page hero](screenshots/landingPage.png)
 
 ### Login (`/login`)
 
@@ -365,9 +361,7 @@ and PayPhone-tuned gradients. Click "Sign in with Cognito" → bounces to
 Cognito Hosted UI for email + password (or sign-up if new) → returns to
 `/marketplace`.
 
-![Login page](https://placehold.co/1280x720/0A0A0A/FF6B35?text=02+%E2%80%94+Login+%2Flogin)
-
-<!-- TODO: replace with docs/screenshots/02-login.png — login page, dark mode, 1280x720 -->
+![Login page](screenshots/loginPage.png)
 
 ### Marketplace (`/marketplace`)
 
@@ -377,9 +371,7 @@ sm/md/lg). The wallet panel above the grid polls
 wallet"** when the balance < $5 on Sepolia. Network badge in the navbar
 (orange = Sepolia, green = mainnet).
 
-![Marketplace](https://placehold.co/1280x900/0A0A0A/FAFAFA?text=03+%E2%80%94+Marketplace+%2Fmarketplace)
-
-<!-- TODO: replace with docs/screenshots/03-marketplace.png — signed in, wallet panel visible, expert grid, 1280x900 -->
+![Marketplace](screenshots/marketPlace.png)
 
 ### AI suggester moment
 
@@ -389,9 +381,7 @@ seeded expert. The chosen card gets a payphone-orange border tint, a
 "Suggested" badge with the model's reason, and the page smooth-scrolls
 to the match.
 
-![AI suggester](https://placehold.co/1280x900/0A0A0A/FF6B35?text=04+%E2%80%94+AI+Suggester+matched+Alice+Chen)
-
-<!-- TODO: replace with docs/screenshots/04-suggester.png — AI suggester filled in, "Suggested" badge on Alice Chen card, 1280x900 -->
+![AI suggester](screenshots/aiAgentChoosingAliceChen.png)
 
 ### Live session (`/session/<id>`)
 
@@ -400,9 +390,7 @@ in the sticky sidebar (desktop) or a sticky mini-bar (mobile), in-call
 transcript streaming both speakers, a pulsing **ON AIR** badge in the
 top-right of the video pane.
 
-![Live session](https://placehold.co/1280x800/0A0A0A/0052FF?text=05+%E2%80%94+Live+Session+%2Fsession%2F%3Cid%3E)
-
-<!-- TODO: replace with docs/screenshots/05-session.png — live call, ticker mid-count, ON AIR badge visible, 1280x800 -->
+![Live session](screenshots/LiveVideoCall.png)
 
 ### Recap (`/session/<id>/recap`)
 
@@ -411,13 +399,11 @@ mono `$X.XX · m:ss` display, a BaseScan link in a payphone-orange chip,
 and the Haiku-streamed AI summary in markdown. Below: a follow-up chat
 box that answers questions grounded in the captured transcript.
 
-![Recap with summary](https://placehold.co/1280x900/0A0A0A/10B981?text=06+%E2%80%94+Recap+with+streaming+summary)
-
-<!-- TODO: replace with docs/screenshots/06-recap.png — recap with settle status + streaming AI summary, 1280x900 -->
+![Recap with summary](screenshots/recap.png)
 
 ![Follow-up chat](https://placehold.co/1280x900/0A0A0A/0052FF?text=07+%E2%80%94+Follow-up+chat+grounded+in+transcript)
 
-<!-- TODO: replace with docs/screenshots/07-recap-chat.png — recap with follow-up chat exchanged, 1280x900 -->
+<!-- TODO: replace with screenshots/recap-chat.png — recap with follow-up chat exchanged, 1280x900 -->
 
 ### Docs page (`/docs`)
 
@@ -427,7 +413,7 @@ Why-These-Choices callouts and the on-chain proof grid.
 
 ![Docs page with animated flowchart](https://placehold.co/1280x900/0A0A0A/7A5AF8?text=08+%E2%80%94+%2Fdocs+animated+architecture)
 
-<!-- TODO: replace with docs/screenshots/08-docs.png — /docs page with the animated flowchart at full extent, 1280x900 -->
+<!-- TODO: replace with screenshots/docs.png — /docs page with the animated flowchart at full extent, 1280x900 -->
 
 ### Mobile (375px)
 
@@ -436,11 +422,9 @@ and the in-call sticky `$X.XX` mini-bar that floats over the iframe when
 scrolled. 44×44 hamburger button (Apple HIG-compliant), 1.5px
 custom-themed scrollbars.
 
-| Marketplace                                                                                            | Live session                                                                                        |
-| ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| ![Mobile marketplace](https://placehold.co/375x812/0A0A0A/FAFAFA?text=09+%E2%80%94+Mobile+Marketplace) | ![Mobile session](https://placehold.co/375x812/0A0A0A/FF6B35?text=10+%E2%80%94+Mobile+Live+Session) |
-
-<!-- TODO: replace with docs/screenshots/09-mobile-marketplace.png + 10-mobile-session.png at 375×812 each -->
+| Marketplace                                                  | Live session                                                  |
+| ------------------------------------------------------------ | ------------------------------------------------------------- |
+| ![Mobile marketplace](screenshots/mobilemarketplace.png)     | ![Mobile session](screenshots/mobilelivevideochat.png)        |
 
 ## How it works
 
