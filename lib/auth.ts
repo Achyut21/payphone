@@ -1,66 +1,45 @@
 /**
- * PayPhone — fake auth helpers.
+ * PayPhone — auth helpers (M5 NextAuth-backed).
  *
- * Cookie-based "login" with three seeded users. No real auth provider, no
- * password, no JWT — just a cookie holding a user id. Per CONTEXT.md the
- * full Cognito flow is a stretch goal; this is the deliberate
- * fake-but-secure pattern for the hackathon.
+ * `getCurrentUser()` is the single read-side abstraction the rest of the
+ * app uses to ask "who is this request for?". It wraps NextAuth v5's
+ * `auth()` and projects the JWT-backed session onto a tight `AppUser`
+ * shape (id + email).
  *
- * Why httpOnly: the cookie can't be read or tampered with from client JS,
- * so even though the contents are non-sensitive (just "alice" / "bob" /
- * "charlie"), there's no XSS path to spoof someone else.
+ * History:
+ *   - M4: cookie-based seeded login. Three seeded users; `getCurrentUser`
+ *     read the cookie, looked up against `DEMO_USERS`, returned the row.
+ *   - M5: replaced with Cognito + NextAuth. `id` is now the Cognito
+ *     `sub`; the seeded user list is going away in Phase 4.
  *
- * Server-only module. Imports `next/headers`, which throws if called from
- * a Client Component. All callers must be Server Components, server
- * actions, or route handlers.
+ * The `setCurrentUser`/`clearCurrentUser` writers from M4 are gone —
+ * NextAuth's `signIn`/`signOut` (re-exported from `@/auth`) replace them.
+ *
+ * Server-only module. The underlying `auth()` call uses `next/headers`,
+ * which throws if invoked from a Client Component. All callers must be
+ * Server Components, server actions, or route handlers.
  */
 
 import 'server-only';
-import { cookies } from 'next/headers';
 
-import { AUTH_COOKIE_NAME, DEMO_USERS, findUserById, type DemoUser } from '@/lib/seed';
+import { auth } from '@/auth';
 
-/** ~30 days. The cookie is non-sensitive so a long TTL is fine. */
-const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
-
-/**
- * Returns the current logged-in user, or null if the cookie is absent or
- * holds an unknown id (e.g. seeded data changed between sessions).
- *
- * Async because Next 15+ made `cookies()` async — calling it synchronously
- * is a hard error at runtime.
- */
-export async function getCurrentUser(): Promise<DemoUser | null> {
-  const cookieStore = await cookies();
-  const rawId = cookieStore.get(AUTH_COOKIE_NAME)?.value;
-  return findUserById(rawId);
-}
+export type AppUser = {
+  /** Cognito `sub` — stable primary key, used as DDB hash for the user table. */
+  id: string;
+  /** Verified email — Cognito's `username_attribute`, always present. */
+  email: string;
+};
 
 /**
- * Set the auth cookie to the given user id. Throws if the id isn't one of
- * the seeded users — login server actions pass a known id from the radio
- * buttons, so this is a defense against a tampered request body.
+ * Returns the current authenticated user, or null if no session exists
+ * or the JWT is missing required fields. The proxy guards `/marketplace`
+ * and `/session/*` so most app callers can assume the result is non-null,
+ * but defensive null-handling is still good practice.
  */
-export async function setCurrentUser(userId: string): Promise<void> {
-  const user = findUserById(userId);
-  if (!user) {
-    throw new Error(`Unknown user id: ${userId}`);
-  }
-  const cookieStore = await cookies();
-  cookieStore.set(AUTH_COOKIE_NAME, user.id, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
-    path: '/',
-    maxAge: COOKIE_MAX_AGE_SECONDS,
-  });
+export async function getCurrentUser(): Promise<AppUser | null> {
+  const session = await auth();
+  const user = session?.user;
+  if (!user || !user.id || !user.email) return null;
+  return { id: user.id, email: user.email };
 }
-
-/** Clear the auth cookie. */
-export async function clearCurrentUser(): Promise<void> {
-  const cookieStore = await cookies();
-  cookieStore.delete(AUTH_COOKIE_NAME);
-}
-
-/** Re-export for convenience so callers don't need both lib/auth and lib/seed. */
-export { DEMO_USERS };

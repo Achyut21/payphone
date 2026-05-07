@@ -1,64 +1,46 @@
 /**
- * PayPhone — login page (M4.5 redesign).
+ * PayPhone — login page (M5 Cognito redesign).
  *
- * Three demo personas; click sets the auth cookie and redirects to
- * `/marketplace`. Per CONTEXT.md the full Cognito flow is a deliberate
- * stretch goal, so this stays a cookie-write with no real auth.
+ * One button: "Continue with email". Clicking it kicks off the standard
+ * NextAuth code-flow handshake against AWS Cognito Hosted UI — Cognito
+ * handles signup, signin, password recovery, and email-verification
+ * screens for us. We don't render any of those.
  *
- * M4.5 visual treatment:
- *   - Aceternity `<Spotlight />` (conic gradients tinted to payphone-blue)
- *     bathes the page with a subtle moving glow.
+ * Visual treatment (carried over from M4.5):
+ *   - Aceternity `<Spotlight />` (conic gradients tinted to payphone-blue
+ *     and a touch of payphone-orange) bathes the page in a subtle moving
+ *     glow.
  *   - Card centered, max-w-md, bg-payphone-surface, payphone-border.
- *   - Each persona is a full-width "card-style" button: avatar + name +
- *     tagline + animated arrow. Pending state via useFormStatus.
- *   - "← back to home" link in the top-left corner — `/` is the public
- *     marketing landing in M4.5.
+ *   - "← Back to home" pinned top-left below the navbar.
  *
- * The pending state is in `<LoginPersonaButton />` (client). The
- * `loginAction` itself stays a server action defined inline.
+ * The signin button itself is a server-action form so the redirect flow
+ * happens server-side (no client JS needed for the auth round-trip).
  */
 
 import Link from 'next/link';
-import { redirect } from 'next/navigation';
-import { ArrowLeft, PhoneCall } from 'lucide-react';
+import { ArrowLeft, ArrowRight, PhoneCall } from 'lucide-react';
 
-import { LoginPersonaButton } from '@/components/LoginPersonaButton';
+import { signIn } from '@/auth';
 import { Spotlight } from '@/components/ui/spotlight-new';
-import { setCurrentUser } from '@/lib/auth';
-import { DEMO_USERS } from '@/lib/seed';
 
 export const metadata = {
   title: 'PayPhone — sign in',
 };
 
 /**
- * Server action: set the auth cookie and redirect to the marketplace.
+ * Server action: hand off to NextAuth's Cognito provider. NextAuth
+ * resolves the OIDC discovery doc, redirects the user to Cognito's
+ * `/oauth2/authorize` (Hosted UI), and on successful return brings
+ * them back via `/api/auth/callback/cognito` and finally `redirectTo`.
  *
- * The hidden `userId` field carries the choice; `setCurrentUser`
- * validates against the seed list and throws on an unknown id, so even
- * a hand-crafted POST can't sign in as someone not in `DEMO_USERS`.
- *
- * NOTE: `redirect()` works by throwing a `NEXT_REDIRECT` error — never
- * wrap this call in try/catch unless you re-throw that error. Plain
- * calls outside try blocks are safe.
+ * `redirect()` flows happen by throwing — never wrap this in try/catch
+ * unless the catch re-throws.
  */
-async function loginAction(formData: FormData): Promise<void> {
+async function loginAction(): Promise<void> {
   'use server';
-  const userId = formData.get('userId');
-  if (typeof userId !== 'string') {
-    throw new Error('login: missing userId');
-  }
-  await setCurrentUser(userId);
-  redirect('/marketplace');
+  await signIn('cognito', { redirectTo: '/marketplace' });
 }
 
-/**
- * Spotlight gradients tuned to payphone-blue. Hue 220° matches our
- * #0052FF token closely; opacities mirror the Aceternity defaults so
- * the glow stays subtle (it's behind the card, not the focal point).
- * The third gradient takes a touch of orange to keep the visual hook
- * consistent with the rest of the M4.5 palette.
- */
 const SPOTLIGHT_GRADIENTS = {
   gradientFirst:
     'radial-gradient(68.54% 68.72% at 55.02% 31.46%, hsla(220, 100%, 70%, .10) 0, hsla(220, 100%, 50%, .04) 50%, hsla(220, 100%, 45%, 0) 80%)',
@@ -71,13 +53,8 @@ const SPOTLIGHT_GRADIENTS = {
 export default function LoginPage() {
   return (
     <main className="relative flex min-h-screen flex-1 items-center justify-center overflow-hidden bg-payphone-bg px-4 py-12 md:px-6">
-      {/* Spotlight is absolute-positioned + pointer-events-none, so it
-          sits behind everything without intercepting clicks. */}
       <Spotlight {...SPOTLIGHT_GRADIENTS} />
 
-      {/* Back to home — top-left corner, doesn't compete with the navbar
-          since the navbar already self-skips on no route, but keeps an
-          obvious escape hatch right above the fold. */}
       <Link
         href="/"
         className="absolute left-4 top-24 z-20 inline-flex items-center gap-1.5 rounded-full border border-payphone-border bg-payphone-surface/60 px-3 py-1.5 text-sm text-payphone-ink-muted backdrop-blur-sm transition-colors hover:border-payphone-blue/40 hover:text-payphone-ink md:left-6 md:top-28"
@@ -86,7 +63,6 @@ export default function LoginPage() {
         Back to home
       </Link>
 
-      {/* Card */}
       <div className="relative z-10 w-full max-w-md rounded-2xl border border-payphone-border bg-payphone-surface/90 p-6 shadow-2xl shadow-black/40 backdrop-blur-md md:p-8">
         <header className="mb-6 flex flex-col items-center gap-3 text-center md:mb-8">
           <div className="flex items-center gap-2">
@@ -96,29 +72,33 @@ export default function LoginPage() {
             </span>
           </div>
           <h1 className="text-2xl font-semibold tracking-tight text-payphone-ink md:text-3xl">
-            Pick a demo persona.
+            Sign in to PayPhone
           </h1>
           <p className="max-w-sm text-sm text-payphone-ink-muted md:text-base">
-            Three seeded users, each pre-funded for the demo. No real auth — clicking a card signs
-            you straight in.
+            We&apos;ll send you to AWS Cognito to sign in or create an account. Email + password,
+            verified by code.
           </p>
         </header>
 
-        <div className="flex flex-col gap-3">
-          {DEMO_USERS.map((user) => (
-            <form key={user.id} action={loginAction}>
-              <input type="hidden" name="userId" value={user.id} />
-              <LoginPersonaButton user={user} />
-            </form>
-          ))}
-        </div>
+        <form action={loginAction}>
+          <button
+            type="submit"
+            className="group flex w-full items-center justify-between rounded-xl bg-payphone-blue px-5 py-3.5 text-base font-semibold text-payphone-ink shadow-lg shadow-payphone-blue/30 transition-all hover:bg-payphone-blue/90 hover:shadow-payphone-blue/40"
+          >
+            <span>Continue with email</span>
+            <ArrowRight
+              className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+              aria-hidden="true"
+            />
+          </button>
+        </form>
 
         <p className="mt-6 text-center text-xs text-payphone-ink-muted/70">
-          Cognito + email is a stretch goal for M5. See{' '}
+          By continuing you agree to PayPhone&apos;s hackathon terms (it&apos;s a demo). See{' '}
           <Link href="/docs" className="text-payphone-blue hover:underline">
             /docs
           </Link>{' '}
-          for the rationale.
+          for what we collect.
         </p>
       </div>
     </main>

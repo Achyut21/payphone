@@ -1,45 +1,43 @@
 /**
- * PayPhone — login guard (Next 16+ proxy convention).
+ * PayPhone — login guard (Next 16+ proxy convention, M5 NextAuth-backed).
  *
  * Renamed from `middleware.ts` per the Next 16 deprecation: the file
- * convention moved to `proxy.ts` and the exported function from
- * `middleware()` to `proxy()`. Matcher config is the actual policy.
+ * convention moved to `proxy.ts`. NextAuth v5's `auth()` factory returns
+ * a request-handler function that exposes `req.auth` (the resolved
+ * session, or null) — we wrap that into the default export and run our
+ * route policy against it.
  *
- * M4.5 routing — public vs protected:
- *   - PUBLIC:    `/` (marketing landing), `/login`, `/docs`, `/api/*`
- *   - PROTECTED: `/marketplace` (logged-in expert browse),
- *                `/session/:path*` (call + recap)
+ * Routing — public vs protected (M5 unchanged from M4.5):
+ *   - PUBLIC:    `/` (marketing landing), `/login`, `/docs`,
+ *                `/api/auth/*` (NextAuth handlers themselves)
+ *   - PROTECTED: `/marketplace` and any sub-route, `/session/:path*`
  *
- * The marketplace's path moved from `/` to `/marketplace` in M4.5 so the
- * root URL can host the marketing landing for unauthenticated visitors.
- *
- * We don't validate the cookie value against the seed list here; we just
- * check it's non-empty. If a tampered/stale id slips through, the
- * downstream server component sees `getCurrentUser() === null` and
- * triggers its own redirect. This proxy is an early-exit convenience,
- * not the security boundary — the seeded auth itself is not a security
- * boundary.
+ * The `matcher` config below restricts the proxy to the protected
+ * paths, so the NextAuth `/api/auth/*` routes never even invoke this
+ * guard. Other API routes (`/api/sessions/*`, `/api/webhooks/*`) are
+ * also intentionally excluded from the proxy: they handle auth
+ * themselves where required, and the webhook is unauthenticated by
+ * design (HMAC-verified, not session-verified).
  */
 
-import { NextResponse, type NextRequest } from 'next/server';
+import { auth } from '@/auth';
 
-import { AUTH_COOKIE_NAME } from '@/lib/seed';
-
-export function proxy(request: NextRequest): NextResponse {
-  const cookie = request.cookies.get(AUTH_COOKIE_NAME);
-  if (!cookie || cookie.value.length === 0) {
-    const loginUrl = new URL('/login', request.url);
-    return NextResponse.redirect(loginUrl);
+export default auth((req) => {
+  const isAuthed = !!req.auth;
+  if (!isAuthed) {
+    const loginUrl = new URL('/login', req.url);
+    return Response.redirect(loginUrl);
   }
-  return NextResponse.next();
-}
+  // No explicit return = let the request through.
+});
 
 /**
- * Matcher: protect `/marketplace` and any `/session/...` path. Listing
- * them explicitly (vs. a "match everything except API+static" negative
- * lookahead) is clearer at our scale and keeps `/`, `/login`, `/docs`,
- * `/api/*`, and static assets out of the proxy entirely.
+ * Matcher: protect `/marketplace` (and any sub-route) and any
+ * `/session/...` path. Listing them explicitly (vs. a "match everything
+ * except API+static" negative lookahead) is clearer at our scale and
+ * keeps `/`, `/login`, `/docs`, `/api/*`, and static assets out of the
+ * proxy entirely.
  */
 export const config = {
-  matcher: ['/marketplace', '/session/:path*'],
+  matcher: ['/marketplace/:path*', '/session/:path*'],
 };

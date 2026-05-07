@@ -3,21 +3,19 @@
 /**
  * PayPhone — auth server actions.
  *
- * `logoutAction` is form-action wired in the navbar's user dropdown. It
- * clears the auth cookie via `lib/auth.ts:clearCurrentUser` and redirects
- * to the public marketing landing at `/`. The proxy guard then leaves
- * the user there (since `/` is public in M4.5).
+ * `logoutAction` is form-action wired in the navbar's user dropdown. M5:
+ * delegates to NextAuth's `signOut`, which clears the JWT cookie and
+ * redirects to the public landing at `/`. The proxy then leaves the
+ * user there since `/` is public.
  *
- * Note: `redirect()` works by throwing a `NEXT_REDIRECT` error — never
- * wrap this call in try/catch unless you re-throw that error. Plain
- * calls outside try blocks are safe.
+ * NextAuth's `signOut` performs the redirect itself by throwing a
+ * `NEXT_REDIRECT` error — same mechanism as Next's `redirect()`, so it
+ * must be called outside any try/catch block (or the catch must
+ * re-throw the error).
  */
 
-import { redirect } from 'next/navigation';
-
-import { clearCurrentUser } from '@/lib/auth';
+import { signOut } from '@/auth';
 
 export async function logoutAction(): Promise<void> {
-  await clearCurrentUser();
-  redirect('/');
+  await signOut({ redirectTo: '/' });
 }

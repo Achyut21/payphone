@@ -14,6 +14,16 @@ const nextConfig: NextConfig = {
    * the field entirely.
    */
   allowedDevOrigins: ['composed-tapeless-equate.ngrok-free.dev'],
+
+  /**
+   * NextAuth v5 (still beta) is ESM-only and resolves `next/server`
+   * lazily; under Next 16's bundling rules this can produce module-not-
+   * found errors in some surfaces. Putting `next-auth` through Next's
+   * own transpiler chain avoids it. Documented workaround per Auth.js
+   * discussion #10058. Belt-and-suspenders alongside the tsconfig
+   * `module: esnext` + `moduleResolution: bundler` switch.
+   */
+  transpilePackages: ['next-auth'],
 };
 
 export default nextConfig;

@@ -31,12 +31,17 @@ export default async function MarketplacePage() {
     redirect('/login');
   }
 
+  // Friendly handle from the verified email — shown only as a greeting.
+  const greeting = user.email.includes('@')
+    ? user.email.slice(0, user.email.indexOf('@'))
+    : user.email;
+
   return (
     <AuroraBackground className="min-h-screen flex-1">
       <main className="relative z-10 mx-auto flex w-full max-w-6xl flex-1 flex-col gap-10 px-6 pb-20 pt-28 sm:pt-32 md:pt-36">
         <header className="flex flex-col gap-2">
           <p className="text-sm font-medium uppercase tracking-wide text-payphone-blue">
-            Welcome, {user.name}
+            Welcome, {greeting}
           </p>
           <h1 className="text-3xl font-semibold tracking-tight text-payphone-ink sm:text-4xl md:text-5xl">
             Pick someone to call.

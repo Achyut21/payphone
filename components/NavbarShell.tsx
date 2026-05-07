@@ -30,7 +30,13 @@ import { LogOut, Menu, PhoneCall, X } from 'lucide-react';
 import { logoutAction } from '@/app/_actions/auth';
 import { avatarUrl } from '@/lib/avatar';
 import { cn } from '@/lib/utils';
-import type { DemoUser } from '@/lib/seed';
+import type { AppUser } from '@/lib/auth';
+
+/** Pull a short friendly handle out of an email — `someone@example.com` → `someone`. */
+function emailHandle(email: string): string {
+  const at = email.indexOf('@');
+  return at > 0 ? email.slice(0, at) : email;
+}
 
 type NavLink = { name: string; href: string; external?: boolean };
 
@@ -48,7 +54,7 @@ const LOGGED_IN_LINKS: readonly NavLink[] = [
 /** Match `/session/<id>` exactly — NOT `/session/<id>/recap` (that gets chrome). */
 const IMMERSIVE_SESSION_PATTERN = /^\/session\/[^/]+\/?$/;
 
-export function NavbarShell({ user }: { user: DemoUser | null }) {
+export function NavbarShell({ user }: { user: AppUser | null }) {
   const pathname = usePathname();
   const [compact, setCompact] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -159,19 +165,26 @@ function CtaButton() {
   );
 }
 
-function UserMenu({ user }: { user: DemoUser }) {
+function UserMenu({ user }: { user: AppUser }) {
+  const handle = emailHandle(user.email);
   return (
     <div className="flex items-center gap-2 rounded-full bg-payphone-surface-elevated py-1 pl-1 pr-2">
-      {/* Avatar — DiceBear hosted SVG, see lib/avatar.ts. */}
+      {/* Avatar — DiceBear hosted SVG, see lib/avatar.ts. M5 keys off email
+          (Cognito users have no manual avatarSeed). */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={avatarUrl(user.avatarSeed)}
+        src={avatarUrl(user.email)}
         alt=""
         width={28}
         height={28}
         className="h-7 w-7 rounded-full bg-payphone-bg"
       />
-      <span className="text-sm font-medium text-payphone-ink">{user.name}</span>
+      <span
+        className="max-w-[12rem] truncate text-sm font-medium text-payphone-ink"
+        title={user.email}
+      >
+        {handle}
+      </span>
       <form action={logoutAction}>
         <button
           type="submit"
@@ -194,7 +207,7 @@ function MobileDrawer({
   open: boolean;
   onClose: () => void;
   links: readonly NavLink[];
-  user: DemoUser | null;
+  user: AppUser | null;
 }) {
   return (
     <AnimatePresence>
@@ -236,21 +249,26 @@ function MobileDrawer({
           <div className="mt-2 border-t border-payphone-border pt-2">
             {user ? (
               <div className="flex items-center justify-between gap-2 px-3 py-2">
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 items-center gap-2">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={avatarUrl(user.avatarSeed)}
+                    src={avatarUrl(user.email)}
                     alt=""
                     width={32}
                     height={32}
-                    className="h-8 w-8 rounded-full bg-payphone-bg"
+                    className="h-8 w-8 shrink-0 rounded-full bg-payphone-bg"
                   />
-                  <span className="text-sm font-medium text-payphone-ink">{user.name}</span>
+                  <span
+                    className="truncate text-sm font-medium text-payphone-ink"
+                    title={user.email}
+                  >
+                    {emailHandle(user.email)}
+                  </span>
                 </div>
                 <form action={logoutAction}>
                   <button
                     type="submit"
-                    className="flex items-center gap-1.5 rounded-full bg-payphone-surface-elevated px-3 py-2 text-sm font-medium text-payphone-ink transition-colors hover:bg-payphone-bg"
+                    className="flex shrink-0 items-center gap-1.5 rounded-full bg-payphone-surface-elevated px-3 py-2 text-sm font-medium text-payphone-ink transition-colors hover:bg-payphone-bg"
                   >
                     <LogOut className="h-4 w-4" />
                     Log out
