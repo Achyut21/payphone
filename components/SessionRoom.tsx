@@ -153,9 +153,27 @@ export function SessionRoom({
       });
       callRef.current = call;
 
+      // M4.9 Bug 1 fix: React 19 Strict Mode double-mounts effects in
+      // dev. If Daily fires `joined-meeting` between the first mount's
+      // cleanup and the second mount's listener attach, the listener
+      // misses it and `joined` stays false forever — the "Connecting…"
+      // overlay then blocks the entire iframe (including the End call
+      // button). Fix: derive `joined` from `call.meetingState()`
+      // directly, on every state-transition event AND once
+      // synchronously after listener attachment. `meetingState()`
+      // returns the current state synchronously so we catch whichever
+      // transition we missed.
+      const syncJoined = () => {
+        if (cancelled) return;
+        setJoined(call.meetingState() === 'joined-meeting');
+      };
+      call.on('joining-meeting', syncJoined);
+      call.on('joined-meeting', syncJoined);
+      call.on('left-meeting', syncJoined);
+      call.on('error', syncJoined);
+
       call.on('joined-meeting', () => {
         if (cancelled) return;
-        setJoined(true);
         // Start realtime transcription. Requires the meeting token (passed
         // to call.join below) to grant `canAdmin: 'transcription'` —
         // without it, this no-ops silently. Daily's daily-js exposes
@@ -299,6 +317,13 @@ export function SessionRoom({
         // needed for `startTranscription()` to actually start. Without it,
         // we still join the room — just without transcription.
         await call.join(roomToken ? { url: roomUrl, token: roomToken } : { url: roomUrl });
+        // M4.9 Bug 1 fix: belt-and-suspenders sync after join resolves.
+        // If `joined-meeting` fired before our listener attached or React
+        // batched away our setState, this synchronous read of
+        // `meetingState()` flips `joined` to true so the overlay
+        // dismisses. join() resolves only after Daily reports the state
+        // is `joined-meeting`.
+        syncJoined();
       } catch (err) {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
