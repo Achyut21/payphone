@@ -56,12 +56,15 @@ resource "aws_cognito_user_pool_client" "web" {
 
   callback_urls = [
     "http://localhost:3000/api/auth/callback/cognito",
-    # Amplify URL gets appended to this list in Phase 7 after the deploy
-    # exists. NextAuth calls back to /api/auth/callback/<provider>.
+    # M5 Phase 7: Amplify-hosted production URL. The path
+    # `/api/auth/callback/cognito` is a NextAuth convention — the
+    # `cognito` segment matches the provider id we pass to NextAuth.
+    "https://main.d3vbs5akc8zis2.amplifyapp.com/api/auth/callback/cognito",
   ]
 
   logout_urls = [
     "http://localhost:3000",
+    "https://main.d3vbs5akc8zis2.amplifyapp.com",
   ]
 
   supported_identity_providers = ["COGNITO"]
